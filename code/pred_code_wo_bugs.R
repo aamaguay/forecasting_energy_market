@@ -1,5 +1,5 @@
-setwd("/home/user/Desktop/files_desktop/project_tud_forecast/AFEM")
-source('functions_d2c.R')
+setwd("/home/user/Desktop/files_desktop/forecasting_energy_market")
+source('code/functions_d2c.R')
 #region
 # %%
 pw<- "#q6a21I&OA5k"
@@ -67,7 +67,7 @@ country <- "NL"
 ZONE <- c(country) 
 i.z <- 1 # later in loop
 zone <- ZONE[i.z]
-CITY <- read_csv("worldcities.csv")
+CITY <- read_csv("data_test/worldcities.csv")
 meteovar <- c("TTT", "Rad1h", "Neff", "RR1c", "FF", "FX1", 'R602','TN','TX','RRS1c')
 inith <- 8 ## hour of day to use forecast, 8 means take data from 8am morning
 MET <- list()
@@ -90,7 +90,7 @@ ds_met %>%
 
 cat('prepare edat dataset*******************************************************\n')
 EDAT<- list()
-ds_edat <- read.csv(str_replace("EDAT_XX.csv", "XX" , country))
+ds_edat <- read.csv(str_replace("new_data/EDAT_XX.csv", "XX" , country))
 ds_edat$DateTime <- as.POSIXct(ds_edat$DateTime, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC")
 yt_name <- paste(country, "_Load_Actual",sep = '')
 cat('na in met dataset*******************************************************\n')
@@ -187,7 +187,7 @@ simple_corr_matrix_plot(DATA %>%
 # Define train and test horizon
 H <- 240
 horizonfull <- 1:H
-last_time <- min(DATA$DateTime) + (3600 * (8*24))
+last_time <- min(DATA$DateTime) + (3600 * (18*24))
 FSTUDYDAYS <- seq(from = last_time, 
                   to = max(DATA$DateTime) - (3600 * (H)),
                   by = 3600 * 24)
@@ -221,7 +221,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("xgb") 
+model.names <- c("xgb","true") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -253,7 +253,7 @@ for (i.m in seq_along(model.names)) {
     
     # model specific data preparation for the forecasting study [model dependent]: 
     if(mname == "GAM" | mname == "xgb"){
-        DATA$DateTime
+        #DATA$DateTime
         vec <- as.integer(DATA$DateTime)
         subs <- match(unique(vec), vec)
         TMPDATA <- bind_cols(DateTime = DATA$DateTime[subs], 
@@ -275,24 +275,33 @@ for (i.m in seq_along(model.names)) {
 
     # begin loop by rows 'N'
     #i.N <- 1
-    cat('------||| begin iteration over each pair of rows **N**, FSTUDYSEQ..rows..i.N........|||------\n')
+    cat('------||| begin iteration over each block of rows **N**, FSTUDYSEQ..rows..i.N........|||------\n')
     for (i.N in seq_along(FSTUDYSEQ)) {
         cat('**--part N#', i.N, 'of model', mname, '--**\n',sep = ' ')
       
         # define id of reestimation
         seqid <- ((FSTUDYSEQid[i.N] + 1):FSTUDYSEQid[i.N + 1])
+        # id row....
+        #  [1]  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
         HORIZON <- list()
         for (i.hl in seq_along(horizonc)[-1]) HORIZON[[i.hl - 1]] <- (horizonc[i.hl - 1] + 1):horizonc[i.hl]
+        #HORIZON, BLOCK OF 24 DAYS, 10days
+        #[[9]]
+        #[1] 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216
+        #[[10]]
+        #[1] 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240
         
         # begin reestimation
         for (i.hl in seq_along(HORIZON)) {
             # cat('HORIZON........24,48....240..ahead.\n')
+            #i.hl <- 1
             cat('+++++** reestimation #', i.hl, 'of model', mname, 'from the part #', i.N,'***+++\n',sep = ' ')
             
             # define max and min horizons
             hmin <- head(HORIZON[[i.hl]], 1)
             hmax <- tail(HORIZON[[i.hl]], 1)
             idt <- FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon)
+            #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1],])
             # View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
             DATAtrain <- FDATA[idt, ]
 
@@ -300,6 +309,7 @@ for (i.m in seq_along(model.names)) {
             for (i.hm in seqid) {
                 idtestl[[i.hm]] <- which(DATATEST$DateTime >= FSTUDYDAYS[i.hm] + hmin * 3600 & DATATEST$DateTime <= FSTUDYDAYS[i.hm] + hmax * 3600 & DATATEST$horizon >= hmin & DATATEST$horizon <= hmax & FSTUDYDAYS[i.hm] == DATATEST$forecast_origin)
             }
+            
             
             idtest <- unlist(idtestl)
             length(idtest)
@@ -328,6 +338,7 @@ for (i.m in seq_along(model.names)) {
             ytarget <- paste(zone, "_Load_Actual", sep = "")
             DATAtest <- DATAtest %>% 
               arrange(horizon, DateTime)
+            
 
             if (mname == "GAM") {
                 act_lags <- LAGS[LAGS >= hmax]
@@ -340,7 +351,7 @@ for (i.m in seq_along(model.names)) {
             if (mname == "xgb") {
                 # 5+'kk'
                 act_lags <- LAGS[LAGS >= hmax]
-                colnames(DATAtrain)
+                #colnames(DATAtrain)
                 
 
                 features_x <- c(paste("HoD",0:23, sep=""),
@@ -360,24 +371,28 @@ for (i.m in seq_along(model.names)) {
                 #colSums(is.na(filter_train))
                 #class(filter_train)
                 #5+"jol"
-                tuneGrid = expand.grid(nrounds = c(15),
-                                       eta = c(0.01, 0.001, 0.0001),
-                                       lambda = seq(0.5,1,0.2),
+                tuneGrid = expand.grid(nrounds = c(5),
+                                       eta = c(0.001),
+                                       lambda = c(0.5),
                                        alpha = 0.01)
                 #write.csv(filter_train, "/home/user/Desktop/files_desktop/forecasting_energy_market/mmz.csv")
                 #class(filter_train)
                 #filter_train <- read.csv("/home/user/Desktop/files_desktop/forecasting_energy_market/mmz.csv")
+                cat('estimating xgb.....\n')
                 gbm_op <- train(as.formula(formula_str),
                                 data = filter_train,
                                 method = "xgbLinear",
                                 metric = "RMSE",
                                 tuneGrid = tuneGrid,
                                 verbose=FALSE)
+                cat('finish xgb.....\n')
                 #gbm_op$bestTune                                  
                 #pred_y = predict(gbm_op, filter_test)
-                pred <- t(matrix(predict(gbm_op, newdata = filter_test), ncol = length(HORIZON[[i.hl]]),ncol= S, byrow = TRUE))
+                #View(filter_train)
+                cat('test has: ',dim(filter_test))
+                cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
+                pred <- t(matrix(predict(gbm_op, newdata = filter_test), nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
 
-                length(pred)
                
 
 
@@ -522,11 +537,16 @@ for (i.m in seq_along(model.names)) {
     cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
+#xgb_true_pred <- FORECASTS
+
 FFT <- FORECASTS
+
 for(i.m in 1:M) FFT[,,i.m]<- FORECASTS[, , "true"]
 RES <- FORECASTS - FFT
-View(FORECASTS[, , "hw"])
+View(FORECASTS[, , "xgb"])
+View(FORECASTS[, , "true"])
 View(RES[, , "AR"])
+ts.plot(FORECASTS[, , "xgb"][3,])
 
 tail(head(DATATEST[DATATEST$DateTime >= ymd_hms('2022-07-28- 09:00:00'),] %>% 
        arrange(DateTime,horizon),10),10)
@@ -565,9 +585,12 @@ ts.plot(c(as.vector(FORECASTS[,,"hw"][17,]),
 RMSE <- sqrt(apply(abs(RES)^2, c(3), mean, na.rm = TRUE))
 RMSE
 
+
 MAEh <- apply(abs(RES), c(2,3), mean, na.rm = TRUE) 
 MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE) 
 MAE
+
+View(RES[,,'xgb'])
 
 ts.plot(MAEh[1:20,c('true','hw','AR')], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
