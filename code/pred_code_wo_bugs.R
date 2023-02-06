@@ -222,7 +222,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("xgb", "AR", "true") 
+model.names <- c("xgb","true") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -230,6 +230,8 @@ FORECASTS <- array(, dim = c(N, H, M))
 dimnames(FORECASTS) <- list(format(FSTUDYDAYS, "%Y-%m-%d"), paste("h_", 1:H, sep = ""), model.names)
 cat('dimension of result matrix*******************************************************\n')
 dim(FORECASTS)
+#define ls of training time
+ls_train_time <- list()
 
 # run model estimation
 S <- 24
@@ -251,10 +253,10 @@ for (i.m in seq_along(model.names)) {
         list(
           boosting= c("gbdt","dart"),
           obj = c("mse"),
-          num_leaves = seq(20, 50, 1),
-          max_depth = seq(3,25,1), 
+          num_leaves = seq(20, 40, 1),
+          max_depth = seq(3,20,1), 
           learning_rate = c(0.001, 0.1),
-          num_iterations = seq(50, 90, 3),
+          num_iterations = seq(50, 70, 3),
           lambda_l1 = seq(0.001, 0.2, 0.005),
           lambda_l2 = seq(0.01, 0.2, 0.01)
         ))
@@ -280,10 +282,20 @@ for (i.m in seq_along(model.names)) {
         
         #bind_cols(EDAT[[zone]][, "DateTime"], as.data.table(shift(as.data.frame(EDAT[[zone]][, 1:2 + 1]), LAGS, give.names = TRUE)))
         dff <- as.data.frame(base::as.factor(DATA$HoD))
-        names(dff) <- "HoD"
+        names(dff) <- c("HoD")
         MHoW <- as.matrix(sparse.model.matrix(~.-1, data = dff))
         
-        TMPDATA <- cbind(TMPDATA, MHoW[subs,])
+        dfDoW <- as.data.frame(base::as.factor(DATA$DoW))
+        names(dfDoW) <- c("DoW")
+        MDoW <- as.matrix(sparse.model.matrix(~.-1,data = dfDoW))
+        
+        dfMoY <- as.data.frame(base::as.factor(DATA$MoY))
+        names(dfMoY) <- c("MoY")
+        MMoY <- as.matrix(sparse.model.matrix(~.-1,data = dfMoY))
+        
+        all_dummys <- cbind(MHoW, MDoW, MMoY)
+        
+        TMPDATA <- cbind(TMPDATA, all_dummys[subs,])
         FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon) 
     } else {
         FDATA <- DATA 
@@ -366,24 +378,53 @@ for (i.m in seq_along(model.names)) {
                 pred <- t(matrix(predict(mod, newdata = DATAtest), nrow = length(HORIZON[[i.hl]]), byrow = TRUE))
             } # GAM
             if (mname == "xgb") {
-                # 5+'kk'
+                
                 act_lags <- LAGS[LAGS >= hmax]
                 #colnames(DATAtrain)
-                
+                #5+'kk'
+                paste_hod <- paste("HoD",0:22, sep="")
+                paste_dow <- paste("DoW",1:6, sep="")
+                paste_moy <- paste("MoY",1:11, sep="")
 
-                features_x <- c(paste("HoD",0:23, sep=""),
+                features_x <- c(paste_hod,
+                                paste_dow,
+                                paste_moy,
                                 paste("x_lag_",S * c(1:14, 21, 28), sep=""),
                                 'cos365')
                 
                 formula_str <- paste(
-                  paste(ytarget,' ~ ',sep = ''),
-                  paste( paste("HoD",0:23, sep=""), collapse=' + '),' + ',
+                  paste(ytarget,' ~ ',sep = ''), 
+                  paste( paste_dow, collapse=' + '),' + ',
+                  paste( paste_moy, collapse=' + '),' + ',
+                  paste( paste_hod, collapse=' + '),' + ',
                   paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ cos365'), sep = '')
                 
                 filter_train <- DATAtrain[, c(ytarget,features_x)] %>% 
                                                                   replace(is.na(.), 0)
                 filter_test <- DATAtest[, c(features_x)] %>% 
                                                             replace(is.na(.), 0)
+                 
+                col_comb_features <- c(paste_dow, paste_hod, paste_moy )
+                tmp_ds_transf <- list()
+                tmp_ds_transf[[1]] <- DATAtrain %>% select( col_comb_features )
+                tmp_ds_transf[[2]] <- DATAtest %>% select( col_comb_features ) 
+                ls_ds_transf <- list()
+                for (id_ds in 1:length(tmp_ds_transf)){
+                  ds_tmp_orig <- tmp_ds_transf[[id_ds]]
+                  comb_vector <- expand.grid(x = c(paste_dow, paste_hod ), y = c(paste_moy),
+                                             KEEP.OUT.ATTRS = FALSE)
+                  name_vector_comb <- sub("\\.var", ".", do.call(paste, c(comb_vector, sep=".")))
+                  formula_evaluate <- sprintf("transform(ds_tmp_orig, %s = %s*%s)", name_vector_comb, 
+                                              comb_vector[,1], comb_vector[,2])
+                  colnames(ds_tmp_orig)
+                  for(i in seq_along(formula_evaluate)) ds_tmp_orig <- eval(parse(text = formula_evaluate[i]))
+                  final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
+                  ls_ds_transf[[id_ds]] <- final_transf_ds
+                }
+                
+                #update datasets
+                filter_train <- cbind(filter_train, ls_ds_transf[[1]])
+                filter_test <- cbind(filter_test, ls_ds_transf[[2]])
                 
                 #colSums(is.na(filter_train))
                 #class(filter_train)
@@ -391,7 +432,7 @@ for (i.m in seq_along(model.names)) {
                 
                 cat('estimating lgb.....\n')
                 set.seed(1)
-                samp <- sample(1:nrow(lgb.grid ), 10)
+                samp <- sample(1:nrow(lgb.grid ), 5)
                 lgb.gridFilter <- lgb.grid [samp,]
                 # create datasets
                 lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
@@ -401,7 +442,7 @@ for (i.m in seq_along(model.names)) {
                 lgb.valid <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% tail(20) ),
                                          label = head(filter_train[,ytarget], tail(20) ) )
                 
-                
+                #6+"jjj"
                 recent_time <- Sys.time()
                 ls_models <- list()
                 ls_bst_score <- list()
@@ -412,7 +453,7 @@ for (i.m in seq_along(model.names)) {
                   watchlist <- list(validation = lgb.valid)
                   lgb_alg <- lgb.train(params = ls_params,obj = obj,
                                          data = lgb.train, valids = watchlist,
-                                         early_stopping_rounds = 75,verbose = 1,
+                                         early_stopping_rounds = 70,verbose = 1,
                                          eval_freq = 10, force_col_wise=TRUE,
                                          nthread = 5)
                   ls_models[[hyper_combi]] <- lgb_alg
@@ -420,11 +461,8 @@ for (i.m in seq_along(model.names)) {
                 }
                 cat('finish lgb.....\n')
                 last_time <- Sys.time()
-                difftime(recent_time,last_time)
+                diff_mode_iter <- difftime(recent_time,last_time)
                 best_tune_model <- ls_models[[which.min(unlist(ls_bst_score))]]
-                
-                filter_test <- DATAtest[, c(features_x)] %>% 
-                  replace(is.na(.), 0)
                 test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
                 cat('test has: ',dim(filter_test),'\n')
                 cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
@@ -526,9 +564,9 @@ for (i.m in seq_along(model.names)) {
         # cat('process for the horizon **N**finished*******************************************\n',sep = ' ')
     } # i.N
     end_time <- Sys.time()
-    difftime(init_time,end_time)
     cat('....******* model training of', mname,',lasted:...\n',sep = ' ')
-    difftime(init_time,end_time)
+    print(difftime(init_time,end_time))
+    ls_train_time[[mname]] <- (difftime(init_time,end_time))
     cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
@@ -585,11 +623,11 @@ MAE
 
 View(RES[,,'xgb'])
 
-ts.plot(MAEh[1:200,c('true','AR','xgb')], col = 1:8, ylab = "MAE")
+ts.plot(MAEh[1:200,c('true','xgb')], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
-View(MAEh[,c('true','AR','xgb')])
+
 # %%
 #endregion
 
