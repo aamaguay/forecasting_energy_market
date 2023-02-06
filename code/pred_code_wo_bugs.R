@@ -19,6 +19,7 @@ library(data.table)
 library(Matrix)
 
 #####
+library(lightgbm)
 library(astsa)
 library(fastDummies)
 library(RColorBrewer)
@@ -221,7 +222,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("xgb","true") 
+model.names <- c("xgb", "AR", "true") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -234,6 +235,7 @@ dim(FORECASTS)
 S <- 24
 for (i.m in seq_along(model.names)) {
     mname <- model.names[i.m]
+    init_time <- Sys.time()
     cat('\\\\\\\\-- begin model', mname, '........i.m*******************************************//////////\n',sep = ' ')
   
     if (mname %in% c("true", "bench", "GAM", "xgb")) {
@@ -241,6 +243,21 @@ for (i.m in seq_along(model.names)) {
         horizonc <- unique(c(0, findInterval(LAGS, 1:H)))
     } else { # AR
         horizonc <- c(0, H)
+    }
+    
+    # define hyperparamters once
+    if (mname == 'xgb'){
+      lgb.grid <- base::expand.grid(
+        list(
+          boosting= c("gbdt","dart"),
+          obj = c("mse"),
+          num_leaves = seq(20, 50, 1),
+          max_depth = seq(3,25,1), 
+          learning_rate = c(0.001, 0.1),
+          num_iterations = seq(50, 90, 3),
+          lambda_l1 = seq(0.001, 0.2, 0.005),
+          lambda_l2 = seq(0.01, 0.2, 0.01)
+        ))
     }
     
     # define horizon separation
@@ -371,31 +388,49 @@ for (i.m in seq_along(model.names)) {
                 #colSums(is.na(filter_train))
                 #class(filter_train)
                 #5+"jol"
-                tuneGrid = expand.grid(nrounds = c(5),
-                                       eta = c(0.001),
-                                       lambda = c(0.5),
-                                       alpha = 0.01)
-                #write.csv(filter_train, "/home/user/Desktop/files_desktop/forecasting_energy_market/mmz.csv")
-                #class(filter_train)
-                #filter_train <- read.csv("/home/user/Desktop/files_desktop/forecasting_energy_market/mmz.csv")
-                cat('estimating xgb.....\n')
-                gbm_op <- train(as.formula(formula_str),
-                                data = filter_train,
-                                method = "xgbLinear",
-                                metric = "RMSE",
-                                tuneGrid = tuneGrid,
-                                verbose=FALSE)
-                cat('finish xgb.....\n')
-                #gbm_op$bestTune                                  
-                #pred_y = predict(gbm_op, filter_test)
-                #View(filter_train)
-                cat('test has: ',dim(filter_test))
+                
+                cat('estimating lgb.....\n')
+                set.seed(1)
+                samp <- sample(1:nrow(lgb.grid ), 10)
+                lgb.gridFilter <- lgb.grid [samp,]
+                # create datasets
+                lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
+                                        label = DATAtest[,ytarget] )
+                lgb.train <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% head(nrow(filter_train)-20) ),
+                                         label = head(filter_train[,ytarget], nrow(filter_train)-20) )
+                lgb.valid <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% tail(20) ),
+                                         label = head(filter_train[,ytarget], tail(20) ) )
+                
+                
+                recent_time <- Sys.time()
+                ls_models <- list()
+                ls_bst_score <- list()
+                for (hyper_combi in 1:nrow(lgb.gridFilter)){
+                  ls_params <- as.list(data.frame(lgb.gridFilter[hyper_combi,]) )
+                  obj <- as.character(ls_params$obj)
+                  ls_params <- within(ls_params, rm(obj))
+                  watchlist <- list(validation = lgb.valid)
+                  lgb_alg <- lgb.train(params = ls_params,obj = obj,
+                                         data = lgb.train, valids = watchlist,
+                                         early_stopping_rounds = 75,verbose = 1,
+                                         eval_freq = 10, force_col_wise=TRUE,
+                                         nthread = 5)
+                  ls_models[[hyper_combi]] <- lgb_alg
+                  ls_bst_score[[hyper_combi]] <- lgb_alg$best_score
+                }
+                cat('finish lgb.....\n')
+                last_time <- Sys.time()
+                difftime(recent_time,last_time)
+                best_tune_model <- ls_models[[which.min(unlist(ls_bst_score))]]
+                
+                filter_test <- DATAtest[, c(features_x)] %>% 
+                  replace(is.na(.), 0)
+                test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
+                cat('test has: ',dim(filter_test),'\n')
                 cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
-                pred <- t(matrix(predict(gbm_op, newdata = filter_test), nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
-
-               
-
-
+                pred <- t(matrix(predict(best_tune_model, data = test_sparse), 
+                         nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
+                
                 #pred_yt = predict(gbm_op, filter_train %>% select(-ytarget))
                 #ts.plot(cbind(DATAtest[, c(ytarget)], pred_y), col= c('red','blue'))
                 #ts.plot(cbind(DATAtrain[, c(ytarget)], pred_yt), col= c('red','blue'))
@@ -438,54 +473,10 @@ for (i.m in seq_along(model.names)) {
               }
               tmp <- rbind(DATAtrainwow, DATAtestwow)
               rownames(tmp) <- NULL
-              #x_exog <- fastDummies::dummy_cols(tmp, 
-              #                                  select_columns = c("SummerTime","DoW","DoY", "MoY"),
-              #                                  remove_first_dummy = TRUE,
-              #                                  remove_selected_columns =TRUE)
- 
-              #x_exog <- x_exog[, c(22:ncol(x_exog)) ]
               mod <- auto.arima(zoo::na.locf(y),
                                 max.p = om, max.q = om, d = 0,
                                 max.P = om, max.Q = om,
                                 seasonal = TRUE, ic = "aic" )
-              #xreg = as.matrix(x_exog[1:length(y), c(1:7,372:382)], 
-              #                 nrow= length(y) , ncol= ncol(x_exog) ) 
-              #sm <- sarima (y, 1,0,1, 2,1,2,24, no.constant=TRUE)
-              #acf2(resid(sm$fit))
-              #predict(sm, newdata = 0.5*(y[1:24]), n.ahead= 24)
-              #forecast(sm, h= 24)
-              
-              pred <- matrix(, length(seqid), H)
-              
-              #for (i.NN in 1:length(seqid)){
-              #  i.NN <- 2
-              #  ym <- tmp[seq(1, (yn + (S * (i.NN-1)) )), ytarget ]
-              #  exog_temp <- as.matrix(x_exog[ seq(1, (yn + (S * (i.NN-1)) )), c(1:7,372:382) ])
-              #  dim(exog_temp)
-              #  length(ym)
-                #pred[i.NN, ] <- 
-              #  zz <- forecast(mod,
-              #          xreg = exog_temp,
-              #          h = H)$mean
-              #  ts.plot(zz)
-              #  pp <- predict(mod, newdata = ym,
-              #          n.ahead = 24, newxreg= exog_temp)$pred
-              #  ts.plot(head(pp,48))
-              #  ts.plot(head(y,72))
-              #  ts.plot(zz)
-              #  length(pp)
-              #  length(ym)
-                
-              #  ts.plot(predict(mod, newdata = tmp[yn + (-0 + 1):(0 + (2 - 1) * S), c(ytarget)],
-              #          newxreg = as.matrix(x_exog[ yn + (-0 + 1):(0 + (2 - 1) * S), c(1:7,372:382) ] ),
-              #          n.ahead = H)$pred)
-                
-                
-              #}
-              
-              
-              #predict(mod, newdata = tmp[yn + (-mod$order + 1):0 + (2 - 1) * S, c(ytarget)],
-             #        n.ahead = H, newxreg= as.matrix(x_exog[yn + (-mod$order + 1):0 + (2 - 1) * S, c("SummerTime","DoW")]) )$pred
               
               pred <- matrix(, length(seqid), H)
               for (i.NN in 1:length(seqid)) pred[i.NN, ] <- predict(mod, newdata = DATAwow[yn + (-mod$order + 1):0 + (i.NN - 1) * S], n.ahead = H)$pred
@@ -534,10 +525,12 @@ for (i.m in seq_along(model.names)) {
         } # i.hl
         # cat('process for the horizon **N**finished*******************************************\n',sep = ' ')
     } # i.N
+    end_time <- Sys.time()
+    difftime(init_time,end_time)
+    cat('....******* model training of', mname,',lasted:...\n',sep = ' ')
+    difftime(init_time,end_time)
     cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
-
-#xgb_true_pred <- FORECASTS
 
 FFT <- FORECASTS
 
@@ -592,11 +585,11 @@ MAE
 
 View(RES[,,'xgb'])
 
-ts.plot(MAEh[1:20,c('true','hw','AR')], col = 1:8, ylab = "MAE")
+ts.plot(MAEh[1:200,c('true','AR','xgb')], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
-View(MAEh[,c('true','AR')])
+View(MAEh[,c('true','AR','xgb')])
 # %%
 #endregion
 
