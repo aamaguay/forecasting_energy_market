@@ -160,17 +160,38 @@ HoD = lubridate::hour(DATA$DateTime)
 DoW = lubridate::wday(DATA$DateTime, week_start = 1)
 DoY = lubridate::yday(DATA$DateTime)
 MoY = lubridate::month(DATA$DateTime)
+WoY = lubridate::week(DATA$DateTime)
+DoM = lubridate::mday(DATA$DateTime)
 HoDDST = lubridate::hour(DATA$DateTimeCET)
 DoWDST = lubridate::wday(DATA$DateTimeCET, week_start = 1)
 DoYDST = lubridate::yday(DATA$DateTimeCET)
 MoYDST = lubridate::month(DATA$DateTimeCET)
-DET <- cbind(SummerTime, HoD, DoW, DoY, MoY, HoDDST, DoWDST, DoYDST, MoYDST)
+WoYDST  = lubridate::week(DATA$DateTimeCET)
+DoMDST = lubridate::mday(DATA$DateTimeCET)
+DET <- cbind(SummerTime, HoD, DoW, DoY, MoY, WoY, DoM, HoDDST, DoWDST, DoYDST, MoYDST, WoYDST, DoMDST)
 
 cat('agg additional features and DATA ***************************************************\n')
 DATA <- cbind(DATA, DET)
 
-cat("add additional seasonality using cosine**********************************************\n")
-DATA$cos365 <- cos(2*pi*DATA$DoY / 365.25)
+cat("add cyclic/seasonality features using cosine/sin and weekend**********************************************\n")
+DATA$HoD_sin = sin((DATA$HoD*2*pi)/23)
+DATA$HoD_cos = cos((DATA$HoD*2*pi)/23)
+DATA$DoW_sin = sin((DATA$DoW*2*pi)/7)
+DATA$DoW_cos = cos((DATA$DoW*2*pi)/7)
+DATA$MoY_sin = sin((DATA$MoY*2*pi)/12)
+DATA$MoY_cos = cos((DATA$MoY*2*pi)/12)
+DATA$DoY_sin = sin((DATA$DoY*2*pi)/366)
+DATA$DoY_cos = cos((DATA$DoY*2*pi)/366)
+DATA$WoY_sin = sin((DATA$WoY*2*pi)/53)
+DATA$WoY_cos = cos((DATA$WoY*2*pi)/53)
+DATA$DoM_sin = sin((DATA$DoM*2*pi)/31)
+DATA$DoM_cos = cos((DATA$DoM*2*pi)/31)
+DATA$weekend =  ifelse((DATA$DoW %in% c(6,7)), 1, 0)
+
+
+#plot of seasonal patterns
+#mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
+#plot(head(mmzz$DateTime,16+(24*100)),head(mmzz$NL_Load_Actual,16+(24*100)),type='l')
 
 cat('na in FULL dataset*******************************************************\n')
 colSums(is.na(DATA))
@@ -222,7 +243,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("xgb","true") 
+model.names <- c("xgb","AR", "true") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -295,7 +316,42 @@ for (i.m in seq_along(model.names)) {
         
         all_dummys <- cbind(MHoW, MDoW, MMoY)
         
-        TMPDATA <- cbind(TMPDATA, all_dummys[subs,])
+        cat("interaction features****************************************************\n")
+        paste_hod <- paste("HoD",0:22, sep="")
+        paste_dow <- paste("DoW",1:6, sep="")
+        paste_moy <- paste("MoY",1:11, sep="")
+        paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM"), 
+                                               function(x) c(paste(x,'_sin',sep = ''), paste(x,'_cos',sep = '')   )) )
+        col_comb_features <- c(paste_dow, paste_hod, paste_moy )
+        all_comb <- combn(col_comb_features, 2)
+        ls_ds_interaction <- list()
+        for (ncomb in 1:ncol(all_comb)){
+          if ( substr(all_comb[1,ncomb], start=1, stop=3) != substr(all_comb[2,ncomb], start=1, stop=3) ){
+            ls_ds_interaction[[ncomb]] <- paste(all_comb[1,ncomb],all_comb[2,ncomb],sep = 'and')
+          }
+        }
+        ls_ds_interaction <- Filter(Negate(is.null), ls_ds_interaction)
+        ls_ds_interaction <- str_split(ls_ds_interaction,'and')
+        mx_interaction <- matrix(,ncol = 2, nrow = length(ls_ds_interaction) )
+        for (i_comb in 1:length(ls_ds_interaction)) mx_interaction[i_comb,] <- c(ls_ds_interaction[[i_comb]][1],ls_ds_interaction[[i_comb]][2])
+        ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
+        
+        tmp_ds_transf <- list()
+        tmp_ds_transf[[1]] <- all_dummys %>% as.data.frame() %>% select( col_comb_features )
+        ls_ds_transf <- list()
+        for (id_ds in length(tmp_ds_transf)){
+          ds_tmp_orig <- tmp_ds_transf[[id_ds]]
+          comb_vector <- ds_interaction
+          name_vector_comb <- sub("\\.var", ".", do.call(paste, c(comb_vector, sep=".")))
+          formula_evaluate <- sprintf("transform(ds_tmp_orig, %s = %s*%s)", name_vector_comb, 
+                                      comb_vector[,1], comb_vector[,2])
+          colnames(ds_tmp_orig)
+          for(i in seq_along(formula_evaluate)) ds_tmp_orig <- eval(parse(text = formula_evaluate[i]))
+          final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
+          ls_ds_transf[[id_ds]] <- final_transf_ds
+        }
+        TMPDATA <- cbind(TMPDATA, all_dummys[subs,], ls_ds_transf[[1]][subs,])
+        
         FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon) 
     } else {
         FDATA <- DATA 
@@ -382,53 +438,28 @@ for (i.m in seq_along(model.names)) {
                 act_lags <- LAGS[LAGS >= hmax]
                 #colnames(DATAtrain)
                 #5+'kk'
-                paste_hod <- paste("HoD",0:22, sep="")
-                paste_dow <- paste("DoW",1:6, sep="")
-                paste_moy <- paste("MoY",1:11, sep="")
-
+                features_interaction <- colnames(ls_ds_transf[[1]])
                 features_x <- c(paste_hod,
                                 paste_dow,
                                 paste_moy,
                                 paste("x_lag_",S * c(1:14, 21, 28), sep=""),
-                                'cos365')
+                                paste_seasonality,
+                                features_interaction,
+                                'weekend', "SummerTime")
                 
                 formula_str <- paste(
                   paste(ytarget,' ~ ',sep = ''), 
                   paste( paste_dow, collapse=' + '),' + ',
                   paste( paste_moy, collapse=' + '),' + ',
                   paste( paste_hod, collapse=' + '),' + ',
-                  paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ cos365'), sep = '')
+                  paste( paste_seasonality, collapse=' + '),' + ',
+                  paste( features_interaction, collapse=' + '),' + ',
+                  paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
                 
-                filter_train <- DATAtrain[, c(ytarget,features_x)] %>% 
+                filter_train <- DATAtrain[, c(ytarget, features_x, features_interaction)] %>% 
                                                                   replace(is.na(.), 0)
-                filter_test <- DATAtest[, c(features_x)] %>% 
+                filter_test <- DATAtest[, c(features_x, features_interaction)] %>% 
                                                             replace(is.na(.), 0)
-                 
-                col_comb_features <- c(paste_dow, paste_hod, paste_moy )
-                tmp_ds_transf <- list()
-                tmp_ds_transf[[1]] <- DATAtrain %>% select( col_comb_features )
-                tmp_ds_transf[[2]] <- DATAtest %>% select( col_comb_features ) 
-                ls_ds_transf <- list()
-                for (id_ds in 1:length(tmp_ds_transf)){
-                  ds_tmp_orig <- tmp_ds_transf[[id_ds]]
-                  comb_vector <- expand.grid(x = c(paste_dow, paste_hod ), y = c(paste_moy),
-                                             KEEP.OUT.ATTRS = FALSE)
-                  name_vector_comb <- sub("\\.var", ".", do.call(paste, c(comb_vector, sep=".")))
-                  formula_evaluate <- sprintf("transform(ds_tmp_orig, %s = %s*%s)", name_vector_comb, 
-                                              comb_vector[,1], comb_vector[,2])
-                  colnames(ds_tmp_orig)
-                  for(i in seq_along(formula_evaluate)) ds_tmp_orig <- eval(parse(text = formula_evaluate[i]))
-                  final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
-                  ls_ds_transf[[id_ds]] <- final_transf_ds
-                }
-                
-                #update datasets
-                filter_train <- cbind(filter_train, ls_ds_transf[[1]])
-                filter_test <- cbind(filter_test, ls_ds_transf[[2]])
-                
-                #colSums(is.na(filter_train))
-                #class(filter_train)
-                #5+"jol"
                 
                 cat('estimating lgb.....\n')
                 set.seed(1)
