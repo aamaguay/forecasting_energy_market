@@ -190,8 +190,8 @@ DATA$weekend =  ifelse((DATA$DoW %in% c(6,7)), 1, 0)
 
 ts.plot(DATA$weekend)
 #plot of seasonal patterns
-#mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
-#plot(head(mmzz$DateTime,16+(24*100)),head(mmzz$NL_Load_Actual,16+(24*100)),type='l')
+mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
+plot(head(mmzz$DateTime,16+(24*1000)),head(mmzz$NL_Load_Actual,16+(24*1000)),type='l')
 
 cat('na in FULL dataset*******************************************************\n')
 colSums(is.na(DATA))
@@ -345,7 +345,8 @@ for (i.m in seq_along(model.names)) {
     ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
     
     tmp_ds_transf <- list()
-    tmp_ds_transf[[1]] <- all_dummys %>% as.data.frame() %>% select( col_comb_features )
+
+    tmp_ds_transf[[1]] <- all_dummys[,col_comb_features]
     ls_ds_transf <- list()
     for (id_ds in length(tmp_ds_transf)){
       ds_tmp_orig <- tmp_ds_transf[[id_ds]]
@@ -358,7 +359,7 @@ for (i.m in seq_along(model.names)) {
       final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
       ls_ds_transf[[id_ds]] <- final_transf_ds
     }
-    TMPDATA <- cbind(TMPDATA, all_dummys[subs,], ls_ds_transf[[1]][subs,])
+    TMPDATA <- cbind(TMPDATA, all_dummys[subs, -unlist(list(ncol(all_dummys)))], ls_ds_transf[[1]][subs,])
     
     FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon) 
   } else {
@@ -464,9 +465,12 @@ for (i.m in seq_along(model.names)) {
           paste( features_interaction, collapse=' + '),' + ',
           paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
         
-        filter_train <- DATAtrain[, c(ytarget, features_x, features_interaction)] %>% 
+        DATAtrain[, c(features_x[1:565])]
+        length(features_x[1:566])
+        colnames(DATAtrain)
+        filter_train <- DATAtrain[, c(ytarget, features_x)] %>% 
           replace(is.na(.), 0)
-        filter_test <- DATAtest[, c(features_x, features_interaction)] %>% 
+        filter_test <- DATAtest[, c(features_x)] %>% 
           replace(is.na(.), 0)
         
         cat('estimating lgb.....\n')
@@ -662,10 +666,14 @@ MAE
 
 View(RES[,,'xgb'])
 
-ts.plot(MAEh[1:200,c('true','xgb')], col = 1:8, ylab = "MAE")
+ts.plot(MAEh[1:200,model.names], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
 
-# %%
-#endregion
+length(as.vector(FORECASTS[,,'xgb'])[4800:5000])
+# error verification
+ts.plot(as.vector(FORECASTS[,,'xgb'])[14400:(4800*9)],col='red')
+lines(as.vector(FORECASTS[,,'true'])[14400:(4800*9)],col='blue')
+lines(as.vector(FORECASTS[,,'AR'])[14400:(4800*9)],col='green')
+
