@@ -162,13 +162,15 @@ DoY = lubridate::yday(DATA$DateTime)
 MoY = lubridate::month(DATA$DateTime)
 WoY = lubridate::week(DATA$DateTime)
 DoM = lubridate::mday(DATA$DateTime)
+QoY <- lubridate::quarter(DATA$DateTime)
 HoDDST = lubridate::hour(DATA$DateTimeCET)
 DoWDST = lubridate::wday(DATA$DateTimeCET, week_start = 1)
 DoYDST = lubridate::yday(DATA$DateTimeCET)
 MoYDST = lubridate::month(DATA$DateTimeCET)
 WoYDST  = lubridate::week(DATA$DateTimeCET)
 DoMDST = lubridate::mday(DATA$DateTimeCET)
-DET <- cbind(SummerTime, HoD, DoW, DoY, MoY, WoY, DoM, HoDDST, DoWDST, DoYDST, MoYDST, WoYDST, DoMDST)
+QoYDST <- lubridate::quarter(DATA$DateTimeCET)
+DET <- cbind(SummerTime, HoD, DoW, DoY, MoY, WoY, DoM, QoY, HoDDST, DoWDST, DoYDST, MoYDST, WoYDST, DoMDST, QoYDST)
 
 cat('agg additional features and DATA ***************************************************\n')
 DATA <- cbind(DATA, DET)
@@ -186,9 +188,10 @@ DATA$WoY_sin = sin((DATA$WoY*2*pi)/53)
 DATA$WoY_cos = cos((DATA$WoY*2*pi)/53)
 DATA$DoM_sin = sin((DATA$DoM*2*pi)/31)
 DATA$DoM_cos = cos((DATA$DoM*2*pi)/31)
+DATA$QoY_sin = sin((DATA$QoY*2*pi)/4)
+DATA$QoY_cos = cos((DATA$QoY*2*pi)/4)
 DATA$weekend =  ifelse((DATA$DoW %in% c(6,7)), 1, 0)
-
-ts.plot(DATA$weekend)
+#ts.plot(DATA$weekend)
 #plot of seasonal patterns
 mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
 plot(head(mmzz$DateTime,16+(24*1000)),head(mmzz$NL_Load_Actual,16+(24*1000)),type='l')
@@ -317,17 +320,22 @@ for (i.m in seq_along(model.names)) {
     names(dfMoY) <- c("MoY")
     MMoY <- as.matrix(sparse.model.matrix(~.-1,data = dfMoY))
     
+    dfQoY <- as.data.frame(base::as.factor(DATA$QoY))
+    names(dfQoY) <- c("QoY")
+    MQoY <- as.matrix(sparse.model.matrix(~.-1,data = dfQoY))
+    
     weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
     colnames(weekend_mx) <- c("weekend")
-    all_dummys <- cbind(MHoW, MDoW, MMoY, weekend_mx )
+    all_dummys <- cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx )
 
     cat("interaction features****************************************************\n")
     paste_hod <- paste("HoD",0:22, sep="")
     paste_dow <- paste("DoW",1:6, sep="")
     paste_moy <- paste("MoY",1:11, sep="")
-    paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM"), 
+    paste_qoy <- paste("QoY",1:3, sep="")
+    paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM", "QoY"), 
                                            function(x) c(paste(x,'_sin',sep = ''), paste(x,'_cos',sep = '')   )) )
-    col_comb_features <- c(paste_dow, paste_hod, paste_moy,'weekend' )
+    col_comb_features <- c(paste_dow, paste_hod, paste_moy, paste_qoy, 'weekend' )
     all_comb <- combn(col_comb_features, 2)
     ls_ds_interaction <- list()
     for (ncomb in 1:ncol(all_comb)){
@@ -451,6 +459,7 @@ for (i.m in seq_along(model.names)) {
         features_x <- c(paste_hod,
                         paste_dow,
                         paste_moy,
+                        paste_qoy,
                         paste("x_lag_",S * c(1:14, 21, 28), sep=""),
                         paste_seasonality,
                         features_interaction,
@@ -461,6 +470,7 @@ for (i.m in seq_along(model.names)) {
           paste( paste_dow, collapse=' + '),' + ',
           paste( paste_moy, collapse=' + '),' + ',
           paste( paste_hod, collapse=' + '),' + ',
+          paste( paste_qoy, collapse=' + '),' + ',
           paste( paste_seasonality, collapse=' + '),' + ',
           paste( features_interaction, collapse=' + '),' + ',
           paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
@@ -475,7 +485,7 @@ for (i.m in seq_along(model.names)) {
         
         cat('estimating lgb.....\n')
         set.seed(1)
-        samp <- sample(1:nrow(lgb.grid ), 10)
+        samp <- sample(1:nrow(lgb.grid ), 15)
         lgb.gridFilter <- lgb.grid [samp,]
         # create datasets
         lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
@@ -676,4 +686,8 @@ length(as.vector(FORECASTS[,,'xgb'])[4800:5000])
 ts.plot(as.vector(FORECASTS[,,'xgb'])[14400:(4800*9)],col='red')
 lines(as.vector(FORECASTS[,,'true'])[14400:(4800*9)],col='blue')
 lines(as.vector(FORECASTS[,,'AR'])[14400:(4800*9)],col='green')
+
+ts.plot(as.vector(FORECASTS[,,'xgb'])[1:(24*50)],col='red')
+lines(as.vector(FORECASTS[,,'true'])[1:(24*50)],col='blue')
+lines(as.vector(FORECASTS[,,'AR'])[1:(24*50)],col='green')
 
