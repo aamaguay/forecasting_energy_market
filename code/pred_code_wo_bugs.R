@@ -249,7 +249,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("lasso","AR", "true") 
+model.names <- c("lasso","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -267,7 +267,7 @@ for (i.m in seq_along(model.names)) {
   init_time <- Sys.time()
   cat('\\\\\\\\-- begin model', mname, '........i.m*******************************************//////////\n',sep = ' ')
   
-  if (mname %in% c("true", "bench", "GAM", "xgb", "lasso")) {
+  if (mname %in% c("true", "bench", "GAM", "xgb", "elasticNet")) {
     LAGS <- S * c(1:14, 21, 28)
     horizonc <- unique(c(0, findInterval(LAGS, 1:H)))
   } else { # AR
@@ -301,7 +301,7 @@ for (i.m in seq_along(model.names)) {
   cat('# of horizon separation *N*', Nsplitlen, 'of model', mname, '*******************************************\n',sep = ' ')
   
   # model specific data preparation for the forecasting study [model dependent]: 
-  if(mname %in% c("GAM", "xgb", "lasso")){
+  if(mname %in% c("GAM", "xgb", "elasticNet")){
     #DATA$DateTime
     vec <- as.integer(DATA$DateTime)
     subs <- match(unique(vec), vec)
@@ -533,7 +533,7 @@ for (i.m in seq_along(model.names)) {
         #class(as.matrix(DATAtrain[, features_x]))
         
       }
-      if (mname == "lasso") {
+      if (mname == "elasticNet") {
         filter_train <- DATAtrain[, c(ytarget, features_x)] %>% 
           replace(is.na(.), 0)
         filter_test <- DATAtest[, c(ytarget, features_x)] %>% 
@@ -551,26 +551,24 @@ for (i.m in seq_along(model.names)) {
           paste( features_interaction, collapse=' + '),' + ',
           paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
         #5+"k"
-        lambdas <- c(seq(0.001, 1, 0.02), seq(1,500, 6) )
-        
-        estimate.ridge <- function(id_val, filter_train, filter_valid, lambdas, ytarget){
-          lambda_val <- lambdas[id_val]
-          ridge_reg = glmnet(x = as.matrix(filter_train %>% select(-ytarget) ),
-                             y = filter_train[,ytarget], 
-                             alpha = 0, family = 'gaussian', lambda = lambda_val)
-          ridge_pred_val <- predict(ridge_reg, newx = as.matrix(filter_valid %>% select(-ytarget) ) )
-          rmse_val <- RMSE(as.matrix(filter_valid %>% select(ytarget)), ridge_pred_val)
-          return(c(lambda_val, rmse_val))
-        }
-        est.ridge <- mclapply(1:length(lambdas), FUN = function(i) estimate.ridge(i, filter_train, filter_valid, lambdas, ytarget )) 
-        ds_result_ridge <- as.data.frame(est.ridge)
-        colnames(ds_result_ridge) <- NULL
-        lambda_min <- ds_result_ridge[1,][which.min(ds_result_ridge[2,])]
-        best_ridge_reg = glmnet(x = as.matrix(filter_train %>% select(-ytarget) ),
-                           y = filter_train[,ytarget], 
-                           alpha = 0, family = 'gaussian', lambda = lambda_min)
-        pred <- t(matrix(predict(best_ridge_reg, newx = as.matrix(filter_test %>% select(-ytarget)), 
-                         nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE)) )
+        lambdas <- c(seq(0.001, 1, 0.02), seq(1,100, 2) )
+        alphas <- c(seq(0.001, 1, 0.03), 1)
+        length(lambdas)
+        ts_trControl <- trainControl("timeslice", number= 2,
+                                     initialWindow = nrow(filter_train)-20,
+                                     skip = 0, fixedWindow = FALSE, horizon = 20, timingSamps = 1)
+        elastic_net_reg <- train(
+          x = as.matrix(filter_train %>% select(-ytarget) ),
+          y = filter_train[,ytarget],
+          method = "glmnet",
+          trControl = ts_trControl,
+          tuneGrid = expand.grid(list(alpha = alphas, lambda = lambdas) ),
+          metric = 'RMSE',
+          maximize = FALSE
+        )
+
+        pred <- t(matrix(predict(elastic_net_reg, as.matrix(filter_test %>% select(-ytarget))), 
+                         nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
         
         # since 18:00pm to 7:00am
         #plot(y = mm[, c(ytarget)][48+9:(24*5)],
