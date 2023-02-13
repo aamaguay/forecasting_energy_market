@@ -249,7 +249,7 @@ for (v in IDTEST){
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw"
-model.names <- c("lasso","AR", "true", "bench") 
+model.names <- c("elasticNet","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -538,38 +538,38 @@ for (i.m in seq_along(model.names)) {
           replace(is.na(.), 0)
         filter_test <- DATAtest[, c(ytarget, features_x)] %>% 
           replace(is.na(.), 0)
-        filter_valid <- filter_train %>% tail(20)
-        filter_train <- filter_train %>% head(nrow(filter_train)-20)
+        #filter_valid <- filter_train %>% tail(20)
+        #filter_train <- filter_train %>% head(nrow(filter_train)-20)
         
-        formula_str <- paste(
-          paste(ytarget,' ~ ',sep = ''), 
-          paste( paste_dow, collapse=' + '),' + ',
-          paste( paste_moy, collapse=' + '),' + ',
-          paste( paste_hod, collapse=' + '),' + ',
-          paste( paste_qoy, collapse=' + '),' + ',
-          paste( paste_seasonality, collapse=' + '),' + ',
-          paste( features_interaction, collapse=' + '),' + ',
-          paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
-        #5+"k"
-        lambdas <- c(seq(0.001, 1, 0.02), seq(1,100, 2) )
-        alphas <- c(seq(0.001, 1, 0.03), 1)
-        length(lambdas)
+        lambdas <- c(seq(0.1, 0.91, 0.1), seq(1,45, 2) )
+        alphas <- c(seq(0.8, 1, 0.1), 1)
+        #length(lambdas)
         ts_trControl <- trainControl("timeslice", number= 2,
                                      initialWindow = nrow(filter_train)-20,
-                                     skip = 0, fixedWindow = FALSE, horizon = 20, timingSamps = 1)
+                                     skip = 0, fixedWindow = FALSE, horizon = 20, timingSamps = 1,
+                                     search = "random")
+        elastic.net.grid <- expand.grid(list(alpha = alphas, lambda = lambdas) )
+        set.seed(2)
+        samp <- sample(1:nrow(elastic.net.grid ), 20)
+        elastic.net.gridFilter <- elastic.net.grid[samp,]
+        
+        #init_time1 <- Sys.time()
         elastic_net_reg <- train(
           x = as.matrix(filter_train %>% select(-ytarget) ),
           y = filter_train[,ytarget],
           method = "glmnet",
           trControl = ts_trControl,
-          tuneGrid = expand.grid(list(alpha = alphas, lambda = lambdas) ),
+          tuneGrid = elastic.net.gridFilter,
           metric = 'RMSE',
-          maximize = FALSE
-        )
-
+          maximize = FALSE   )
+        #View(elastic_net_reg$results)
+        #end_time1 <- Sys.time()
+        #print(difftime(init_time1,end_time1))
+        #10*33*6/60
+        
         pred <- t(matrix(predict(elastic_net_reg, as.matrix(filter_test %>% select(-ytarget))), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
-        
+        #ts.plot(pred)
         # since 18:00pm to 7:00am
         #plot(y = mm[, c(ytarget)][48+9:(24*5)],
         #     x =mm[, c("DateTime")][48+9:(24*5)], type = 'l')
