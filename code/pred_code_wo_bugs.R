@@ -46,6 +46,7 @@ library(caret)
 library(gbm)
 library(lme4)
 library(parallel)
+library(sgd)
 #####
 #require(remotes)
 #install_version("caret",version= "6.0.80")
@@ -248,8 +249,8 @@ for (v in IDTEST){
 
 
 # define models to estimate
-# "true", "bench", "GAM", "AR", "hw"
-model.names <- c("elasticNet","AR", "true", "bench") 
+# "true", "bench", "GAM", "AR", "hw", "elasticNet"
+model.names <- c('sgdmodel',"AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -267,7 +268,7 @@ for (i.m in seq_along(model.names)) {
   init_time <- Sys.time()
   cat('\\\\\\\\-- begin model', mname, '........i.m*******************************************//////////\n',sep = ' ')
   
-  if (mname %in% c("true", "bench", "GAM", "xgb", "elasticNet")) {
+  if (mname %in% c("true", "bench", "GAM", "xgb", "elasticNet", "sgdmodel")) {
     LAGS <- S * c(1:14, 21, 28)
     horizonc <- unique(c(0, findInterval(LAGS, 1:H)))
   } else { # AR
@@ -301,7 +302,7 @@ for (i.m in seq_along(model.names)) {
   cat('# of horizon separation *N*', Nsplitlen, 'of model', mname, '*******************************************\n',sep = ' ')
   
   # model specific data preparation for the forecasting study [model dependent]: 
-  if(mname %in% c("GAM", "xgb", "elasticNet")){
+  if(mname %in% c("GAM", "xgb", "elasticNet", "sgdmodel")){
     #DATA$DateTime
     vec <- as.integer(DATA$DateTime)
     subs <- match(unique(vec), vec)
@@ -548,6 +549,7 @@ for (i.m in seq_along(model.names)) {
                                      initialWindow = nrow(filter_train)-20,
                                      skip = 0, fixedWindow = FALSE, horizon = 20, timingSamps = 1,
                                      search = "random")
+        
         elastic.net.grid <- expand.grid(list(alpha = alphas, lambda = lambdas) )
         set.seed(2)
         samp <- sample(1:nrow(elastic.net.grid ), 20)
@@ -574,6 +576,44 @@ for (i.m in seq_along(model.names)) {
         #plot(y = mm[, c(ytarget)][48+9:(24*5)],
         #     x =mm[, c("DateTime")][48+9:(24*5)], type = 'l')
         #View(mm)
+      }
+      if (mname == "sgdmodel"){
+        filter_train <- DATAtrain[, c(ytarget, features_x)] %>% 
+          replace(is.na(.), 0)
+        filter_test <- DATAtest[, c(ytarget, features_x)] %>% 
+          replace(is.na(.), 0)
+        filter_valid <- filter_train %>% tail(20)
+        filter_train <- filter_train %>% head(nrow(filter_train)-20)
+        
+        lambdas <- c(seq(0.1, 0.91, 0.1), seq(1,45, 2) )
+        alphas <- 1
+        #5+"kk"
+        estimate.sgd <- function(id_val, filter_train, filter_valid, alphas, lambdas, ytarget){
+          lambda_val <- lambdas[id_val]
+          sgd_reg = sgd(x = as.matrix(filter_train %>% select(-ytarget) ),
+                        y = filter_train[,ytarget], model = "glm",
+                        model.control = list(lambda1 = alphas, lambda2 = lambda_val) )
+          sgd_pred_val <- predict(sgd_reg, newdata = as.matrix(filter_valid %>% select(-ytarget) ) )
+          rmse_val <- RMSE(as.matrix(filter_valid %>% select(ytarget)), sgd_pred_val)
+          #return(c(lambda_val, rmse_val))
+          return(list(lambda = lambda_val,rmse = rmse_val, mod = sgd_reg ))
+        }
+        #init_time1 <- Sys.time()
+        est.sgd <- mclapply(1:length(lambdas), FUN = function(i) estimate.sgd(i, filter_train, 
+                                                                                filter_valid, alphas,
+                                                                              lambdas, ytarget)) 
+        #end_time1 <- Sys.time()
+        #print(difftime(init_time1,end_time1))
+        rmse_vec = c()
+        for (i in 1:length(lambdas)) rmse_vec[i] <- est.sgd[[i]]$rmse
+        id_min_rmse <- which.min(rmse_vec)
+        best_lambda <- lambdas[id_min_rmse]
+        best_tune_model <- est.sgd[[id_min_rmse]]$mod
+        test_sparse  = Matrix(as.matrix(filter_test %>% select(-ytarget)), sparse=TRUE)
+        pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
+                         nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
+        #ts.plot(as.vector(t(pred)))
+
       }
       if (mname == "AR") {
         DATAtrainwow <- DATAtrain[DATAtrain$horizon <= S, ]
@@ -714,6 +754,7 @@ MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE)
 MAE
 
 View(RES[,,'xgb'])
+View(elastic_net_reg$results)
 
 ts.plot(MAEh[1:200,model.names], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
@@ -726,7 +767,8 @@ ts.plot(as.vector(FORECASTS[,,'xgb'])[14400:(4800*9)],col='red')
 lines(as.vector(FORECASTS[,,'true'])[14400:(4800*9)],col='blue')
 lines(as.vector(FORECASTS[,,'AR'])[14400:(4800*9)],col='green')
 
-ts.plot(as.vector(FORECASTS[,,'xgb'])[1:(24*50)],col='red')
-lines(as.vector(FORECASTS[,,'true'])[1:(24*50)],col='blue')
-lines(as.vector(FORECASTS[,,'AR'])[1:(24*50)],col='green')
+ts.plot(as.vector(FORECASTS[,,'elasticNet'])[1:(24*5)],col='red')
+lines(as.vector(FORECASTS[,,'bench'])[1:(24*5)],col='pink')
+lines(as.vector(FORECASTS[,,'true'])[1:(24*5)],col='blue')
+lines(as.vector(FORECASTS[,,'AR'])[1:(24*5)],col='green')
 
