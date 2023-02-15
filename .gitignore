@@ -1,8 +1,10 @@
-data_14feb_2023/
-data_22dec_2022/
-data_test
-new_data
+/data_14feb_2023
+/data_22dec_2022
+/data_test
+/new_data
 /code/other_test_exe
-.RData
-.Rhistory
+*.Rproj.user
+*.Rhistory
+*.RData
+*.Ruserdata
 /code/download_dataset.R
