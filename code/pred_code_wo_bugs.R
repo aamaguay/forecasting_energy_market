@@ -17,6 +17,7 @@ library(zoo)
 library(dbplyr)
 library(data.table)
 library(Matrix)
+library(splines)
 
 #####
 library(glmnet)
@@ -196,10 +197,13 @@ DATA$DoM_cos = cos((DATA$DoM*2*pi)/31)
 DATA$QoY_sin = sin((DATA$QoY*2*pi)/4)
 DATA$QoY_cos = cos((DATA$QoY*2*pi)/4)
 DATA$weekend =  ifelse((DATA$DoW %in% c(6,7)), 1, 0)
+DATA$is_day_start <- ifelse((DATA$HoD %in% seq(1,6) ), 1, 0)
+DATA$is_day_end <- ifelse((DATA$HoD%in% seq(18,23) ), 1, 0)
+
 #ts.plot(DATA$weekend)
 #plot of seasonal patterns
 mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
-plot(head(mmzz$DateTime,16+(24*1000)),head(mmzz$NL_Load_Actual,16+(24*1000)),type='l')
+plot(head(mmzz$DateTime,16+(24*1)),head(mmzz$NL_Load_Actual,16+(24*1)),type='l')
 
 cat('na in FULL dataset*******************************************************\n')
 colSums(is.na(DATA))
@@ -260,30 +264,27 @@ get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
   #holnames <- gsub(" ", "",holnames)
   hldN <- length(holnames)
   
-  S=24
-  deg=3
-  bridgep = 0.5
-  k=0.25
   #12----(-12)----24-----(+24+12)----36
   #-12 -11 -10  -9  -8  -7  -6  -5  -4  -3  -2  -1   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18
   # 19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35  36
   xbas <- -(S*bridgep):((1+bridgep)*S)
   xbask <- seq(min(xbas), max(xbas), length = k*(length(xbas)-1) +1)
-  library(splines)
-  hldbas<- splineDesign(xbask, xbas, outer.ok=TRUE, ord=deg+1)
-  hldbasc<- t(apply(hldbas,1,cumsum))
-  hldbasx<- hldbas#cbind(hldbas,hldbasc)
-  K<- dim(hldbasx)[2]
   
-  DHL<- array(0, dim=c(length(xtime),K*hldN) ) ## add cumulative
-  i.hld<-1
+  hldbas <- splineDesign(xbask, xbas, outer.ok=TRUE, ord=deg+1)
+  dim(hldbasc)
+  hldbasc <- t(apply(hldbas,1,cumsum))
+  hldbasx<- hldbas #cbind(hldbas,hldbasc)
+  K <- dim(hldbasx)[2]
+  
+  DHL <- array(0, dim=c(length(xtime),K*hldN) ) ## add cumulative
+  i.hld <-1
   for(i.hld in 1:hldN){
-    idhld <- which<-which(xtime %in% as.POSIXct( holidays$Date[ holidays$Name==holnames[i.hld]], tz="UTC"))
+    idhld <- which<-which(xtime %in% as.POSIXct( holidays$Date[ holidays$Name == holnames[i.hld] ], tz="UTC") )
     # idhld<- which(as.numeric(format(dtime, "%m")) == DATEhld[[i.hld]][1]	& as.numeric(format(dtime, "%d")) == DATEhld[[i.hld]][2] & as.numeric(format(dtime, "%H")) == 0)
     for(i.b in seq_along(idhld)){ ## add basis segments
-      idb<- (idhld[i.b]+min(xbas)):(idhld[i.b]+max(xbas)) ## TODO does not work properly if hld is first or last day...
-      idbact<- which(idb>0 & idb<= dim(DHL)[1])
-      DHL[idb[idbact],(1:K)+K*(i.hld-1)]<- hldbasx[idbact,]
+      idb <- (idhld[i.b]+min(xbas)):(idhld[i.b]+max(xbas)) ## TODO does not work properly if hld is first or last day...
+      idbact <- which(idb > 0 & idb <= dim(DHL)[1])
+      DHL[idb[idbact],(1:K)+K*(i.hld-1)] <- hldbasx[idbact,]
     }
   }
   
@@ -292,13 +293,20 @@ get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
   DHL 
 }
 
-tmp <-get.HLD(DATA$DateTime, zone="NL")
+tmp <- get.HLD(DATA$DateTime, zone=country)
 
-length(unique(data.frame(holidays[holidays$Date>="2021-01-01",'Name'])$Name))
-length((holidays[holidays$Date>="2021-01-01",'Name']))
-View(tmp)
-dim(tmp)
-dim(DATA)
+# bind DATA with holidays
+DATA <- cbind(DATA, tmp)
+
+cat('impute met.features******************************************************\n')
+#"TTT", 'FF', TTT doesn't have NA
+DATA$FF <- na_interpolation(DATA$FF, option='spline')
+
+#length(unique(data.frame(holidays[holidays$Date>="2021-01-01",'Name'])$Name))
+#length((holidays[holidays$Date>="2021-01-01",'Name']))
+#View(tmp)
+#dim(tmp)
+#dim(DATA)
 
 #x <- as.matrix(DATA[,c(8)])
 #ts.plot(x)
@@ -314,7 +322,7 @@ dim(DATA)
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel'
-model.names <- c("xgb",'sgdmodel',"AR", "true", "bench") 
+model.names <- c('sgdmodel',"xgb","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -374,7 +382,7 @@ for (i.m in seq_along(model.names)) {
                          shiftDST(DATA[subs,ytarget],
                                   summer = DATA$SummerTime[subs], 
                                   clag = LAGS) )
-    
+
     #bind_cols(EDAT[[zone]][, "DateTime"], as.data.table(shift(as.data.frame(EDAT[[zone]][, 1:2 + 1]), LAGS, give.names = TRUE)))
     dff <- as.data.frame(base::as.factor(DATA$HoD))
     names(dff) <- c("HoD")
@@ -435,12 +443,14 @@ for (i.m in seq_along(model.names)) {
       final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
       ls_ds_transf[[id_ds]] <- final_transf_ds
     }
+    cat("finish interaction features**************************************************\n")
     #define features to use
+    features_holidays <- colnames(tmp)
     features_interaction <- colnames(ls_ds_transf[[1]])
     features_x <- c(paste_hod, paste_dow, paste_moy,
                     paste_qoy, paste("x_lag_",S * c(1:14, 21, 28), sep=""),
-                    paste_seasonality, features_interaction,
-                    'weekend', "SummerTime")
+                    paste_seasonality, features_interaction, features_holidays,
+                    'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF")
     
     TMPDATA <- cbind(TMPDATA, all_dummys[subs, -unlist(list(ncol(all_dummys)))], ls_ds_transf[[1]][subs,])
     
@@ -535,9 +545,11 @@ for (i.m in seq_along(model.names)) {
           paste( paste_moy, collapse=' + '),' + ',
           paste( paste_hod, collapse=' + '),' + ',
           paste( paste_qoy, collapse=' + '),' + ',
+          paste( features_holidays, collapse=' + '),' + ',
           paste( paste_seasonality, collapse=' + '),' + ',
           paste( features_interaction, collapse=' + '),' + ',
-          paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '), '+ weekend+ SummerTime'), sep = '')
+          paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '),
+                 '+ weekend + SummerTime + is_day_start + is_day_end + TTT + FF'),sep = '')
         
         #DATAtrain[, c(features_x[1:565])]
         #length(features_x[1:566])
@@ -840,4 +852,3 @@ View(FORECASTS[1:(20*4),,'xgb'])
 View(FORECASTS[1:(20*4),,'true'])
 #2021-09-08
 
-as.vector(FORECASTS[,,'sgdmodel'])[1:(24*10)]
