@@ -47,6 +47,7 @@ library(gbm)
 library(lme4)
 library(parallel)
 library(sgd)
+
 #####
 #require(remotes)
 #install_version("caret",version= "6.0.80")
@@ -235,6 +236,61 @@ for (v in IDTEST){
   cat(length(v),'\n')
 }
 
+cat("holidays preparation********************************\n")
+holidays <- read_csv("data_22dec_2022/holidays_2000_2030.csv")
+holidays$Name[] <- gsub(" ", "", holidays$Name)
+get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
+  # zone only supports full countries at the moment 
+  # deg is, cubic spline degree
+  # fraction of bridging effects, if 0.5 then half a day before and after the holiday potential effects can occur, values between 0 and 2 are reasonable
+  # k determines the number of grid points for the splines, if k=1/S then each data point we have a new basis (if in addition deg=1, these are indicators), the smaller k the more basis functions.
+  yrange<- range(lubridate::year(xtime))+c(-1,1) # safety margins [allows for predictions up to 1 year ahead]
+  holidays <- holidays %>% filter(CountryCode == zone) %>%
+    filter(lubridate::year(Date)>=yrange[1] & lubridate::year(Date)<=yrange[2] ) 
+  # remove holidays which were not lauched yet.
+  holidays$LaunchYear[is.na(holidays$LaunchYear)]<- 0
+  holidays %>% filter(lubridate::year(Date)>= LaunchYear ) 
+  #holidays %>% select(Date, Name) %>% mutate(
+  #            DoW = lubridate::wday(Date, week_start = 1)
+  #            )## TODO think about more information es. Global and counties
+  #mutate_at(vars(x, y), factor)
+  holidays$Name <- as.factor(holidays$Name)
+  holnames<- levels(holidays$Name)
+  #holnames <- gsub(" ", "",holnames)
+  hldN<- length(holnames)
+  
+  xbas<- -(S*bridgep):((1+bridgep)*S)
+  xbask<- seq(min(xbas), max(xbas), length=k*(length(xbas)-1)+1)
+  library(splines)
+  hldbas<- splineDesign(xbask, xbas, outer.ok=TRUE, ord=deg+1)
+  hldbasc<- t(apply(hldbas,1,cumsum))
+  hldbasx<- hldbas#cbind(hldbas,hldbasc)
+  K<- dim(hldbasx)[2]
+  
+  DHL<- array(0, dim=c(length(xtime),K*hldN) ) ## add cumulative
+  i.hld<-1
+  for(i.hld in 1:hldN){
+    idhld <- which<-which(xtime %in% as.POSIXct( holidays$Date[ holidays$Name==holnames[i.hld]], tz="UTC"))
+    # idhld<- which(as.numeric(format(dtime, "%m")) == DATEhld[[i.hld]][1]	& as.numeric(format(dtime, "%d")) == DATEhld[[i.hld]][2] & as.numeric(format(dtime, "%H")) == 0)
+    for(i.b in seq_along(idhld)){ ## add basis segments
+      idb<- (idhld[i.b]+min(xbas)):(idhld[i.b]+max(xbas)) ## TODO does not work properly if hld is first or last day...
+      idbact<- which(idb>0 & idb<= dim(DHL)[1])
+      DHL[idb[idbact],(1:K)+K*(i.hld-1)]<- hldbasx[idbact,]
+    }
+  }
+  
+  ## holidays prepared but not used.
+  dimnames(DHL)<- list(NULL,paste0(rep(holnames, rep(K,length(holnames))),"_",1:K))
+  DHL 
+}
+
+tmp <-get.HLD(DATA$DateTime, zone="NL")
+
+length(unique(data.frame(holidays[holidays$Date>="2021-01-01",'Name'])$Name))
+length((holidays[holidays$Date>="2021-01-01",'Name']))
+View(tmp)
+dim(tmp)
+dim(DATA)
 
 #x <- as.matrix(DATA[,c(8)])
 #ts.plot(x)
@@ -249,8 +305,8 @@ for (v in IDTEST){
 
 
 # define models to estimate
-# "true", "bench", "GAM", "AR", "hw", "elasticNet"
-model.names <- c('sgdmodel',"AR", "true", "bench") 
+# "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel'
+model.names <- c("xgb","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -281,12 +337,12 @@ for (i.m in seq_along(model.names)) {
       list(
         boosting= c("gbdt","dart"),
         obj = c("mse"),
-        num_leaves = seq(20, 40, 1),
-        max_depth = seq(2,10,1),
-        min_sum_hessian_in_leaf = c(4,6),
+        num_leaves = seq(20, 27, 1),
+        max_depth = seq(7,10,1),
+        min_sum_hessian_in_leaf = c(6,7),
         bagging_fraction = c(0.8),
-        learning_rate = seq(0.01, 0.2, 0.01),
-        num_iterations = seq(40, 65, 3),
+        learning_rate = seq(0.18, 0.3, 0.01),
+        num_iterations = seq(40, 50, 3),
         lambda_l1 = seq(0.01, 0.1, 0.01),
         lambda_l2 = seq(0.01, 0.1, 0.01)
       ))
@@ -430,6 +486,7 @@ for (i.m in seq_along(model.names)) {
       # form dataset and correct dataset
       ls_ds_each_row_date <- list()
       for (i.hm in seqid) {
+        i.hm <- 222
         if (length(idtestl[[i.hm]])>0){
           ids_sample <- idtestl[[i.hm]]
           tmp_sample_ds <- DATATEST[ids_sample, ]
@@ -483,9 +540,8 @@ for (i.m in seq_along(model.names)) {
         filter_test <- DATAtest[, c(features_x)] %>% 
           replace(is.na(.), 0)
         
-        cat('estimating lgb.....\n')
         set.seed(1)
-        samp <- sample(1:nrow(lgb.grid ), 15)
+        samp <- sample(1:nrow(lgb.grid ), 12)
         lgb.gridFilter <- lgb.grid [samp,]
         # create datasets
         lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
@@ -496,10 +552,7 @@ for (i.m in seq_along(model.names)) {
                                  label = head(filter_train[,ytarget], tail(20) ) )
         
         #6+"jjj"
-        recent_time <- Sys.time()
-        ls_models <- list()
-        ls_bst_score <- list()
-        for (hyper_combi in 1:nrow(lgb.gridFilter)){
+        estimate.lgb <- function(hyper_combi, lgb.train, lgb.valid, lgb.gridFilter){
           ls_params <- as.list(data.frame(lgb.gridFilter[hyper_combi,]) )
           obj <- as.character(ls_params$obj)
           ls_params <- within(ls_params, rm(obj))
@@ -508,16 +561,27 @@ for (i.m in seq_along(model.names)) {
                                data = lgb.train, valids = watchlist,
                                early_stopping_rounds = 70,verbose = 1,
                                eval_freq = 10, force_col_wise=TRUE,
-                               nthread = 5)
-          ls_models[[hyper_combi]] <- lgb_alg
-          ls_bst_score[[hyper_combi]] <- lgb_alg$best_score
+                               nthread = 6)
+          return( list(mod = lgb_alg, score = lgb_alg$best_score) )
         }
+        
+        #recent_time <- Sys.time()
+        cat('train lgb.....\n')
+        est.lgb <- lapply(1:nrow(lgb.gridFilter), FUN = function(hyper_combi) estimate.lgb(hyper_combi,
+                                                                                             lgb.train,
+                                                                                             lgb.valid,
+                                                                                             lgb.gridFilter))
         cat('finish lgb.....\n')
-        last_time <- Sys.time()
-        diff_mode_iter <- difftime(recent_time,last_time)
-        best_tune_model <- ls_models[[which.min(unlist(ls_bst_score))]]
+        #last_time <- Sys.time()
+        #diff_mode_iter <- difftime(recent_time,last_time)
+        #View(cbind(lgb.gridFilter,rmse_vec))
+        rmse_vec = c()
+        for (i in 1:nrow(lgb.gridFilter)) rmse_vec[i] <- est.lgb[[i]]$score
+        id_min_rmse <- which.min(rmse_vec)
+        best_tune_model  <- est.lgb[[id_min_rmse]]$mod
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
+        dim(test_sparse)
         cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
         pred <- t(matrix(predict(best_tune_model, data = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
@@ -585,25 +649,29 @@ for (i.m in seq_along(model.names)) {
         filter_valid <- filter_train %>% tail(20)
         filter_train <- filter_train %>% head(nrow(filter_train)-20)
         
-        lambdas <- c(seq(0.1, 0.91, 0.1), seq(1,45, 2) )
+        lambdas <- c(10,20,30,40 )
         alphas <- 1
         #5+"kk"
         estimate.sgd <- function(id_val, filter_train, filter_valid, alphas, lambdas, ytarget){
           lambda_val <- lambdas[id_val]
           sgd_reg = sgd(x = as.matrix(filter_train %>% select(-ytarget) ),
-                        y = filter_train[,ytarget], model = "glm",
-                        model.control = list(lambda1 = alphas, lambda2 = lambda_val) )
+                        y = filter_train[,ytarget], model = "lm",
+                        model.control = list(lambda1 = alphas, lambda2 = lambda_val),
+                        sgd.control = list(method = 'ai-sgd'))
           sgd_pred_val <- predict(sgd_reg, newdata = as.matrix(filter_valid %>% select(-ytarget) ) )
           rmse_val <- RMSE(as.matrix(filter_valid %>% select(ytarget)), sgd_pred_val)
           #return(c(lambda_val, rmse_val))
           return(list(lambda = lambda_val,rmse = rmse_val, mod = sgd_reg ))
         }
+
         #init_time1 <- Sys.time()
         est.sgd <- mclapply(1:length(lambdas), FUN = function(i) estimate.sgd(i, filter_train, 
                                                                                 filter_valid, alphas,
                                                                               lambdas, ytarget)) 
+        #hist(est.sgd[[4]]$mod$coefficients)
         #end_time1 <- Sys.time()
         #print(difftime(init_time1,end_time1))
+
         rmse_vec = c()
         for (i in 1:length(lambdas)) rmse_vec[i] <- est.sgd[[i]]$rmse
         id_min_rmse <- which.min(rmse_vec)
@@ -702,73 +770,67 @@ for (i.m in seq_along(model.names)) {
   cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
+#Update FORECASTS with ensembles
+model.names <- c("xgb","AR", "true", "bench", 'sgdmodel',
+                 'ensemble.sgd.xgb',
+                 'ensemble.sgd.AR',
+                 'ensemble.sgd.xgb.AR')
+M <- length(model.names)
+r_name <- rownames(FORECASTS[,,model.names[1]])
+c_name <- colnames(FORECASTS[,,model.names[1]])
+nw.forecasts <- array(NA, dim = c(N, H, M))
+dimnames(nw.forecasts) <- list(r_name, paste("h_", 1:H, sep = ""), model.names)
+
+nw.forecasts[,, model.names[1]] <- FORECASTS[,,model.names[1]]
+nw.forecasts[,, model.names[2]] <- FORECASTS[,,model.names[2]]
+nw.forecasts[,, model.names[3]] <- FORECASTS[,,model.names[3]]
+nw.forecasts[,, model.names[4]] <- FORECASTS[,,model.names[4]]
+nw.forecasts[,, model.names[5]] <- FORECASTS[,,model.names[5]]
+nw.forecasts[,, model.names[6]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[1]])/2
+nw.forecasts[,, model.names[7]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[2]])/2
+nw.forecasts[,, model.names[8]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[2]]+
+                                      FORECASTS[,,model.names[1]])/3
+
+FORECASTS <- nw.forecasts
 FFT <- FORECASTS
 
 for(i.m in 1:M) FFT[,,i.m]<- FORECASTS[, , "true"]
 RES <- FORECASTS - FFT
-View(FORECASTS[, , "xgb"])
-View(FORECASTS[, , "true"])
-View(RES[, , "AR"])
-ts.plot(FORECASTS[, , "xgb"][3,])
 
-tail(head(DATATEST[DATATEST$DateTime >= ymd_hms('2022-07-28- 09:00:00'),] %>% 
-            arrange(DateTime,horizon),10),10)
-
-ts.plot(c(as.vector(FORECASTS[,,"hw"][17,]),
-          as.vector(FORECASTS[,,"hw"][18,]) ) )
-
-ts.plot(
-  c(FORECASTS[,,"AR"][1:200,])
-)
-
-ts.plot(c(as.vector(FORECASTS[,,"hw"][17,]),
-          as.vector(FORECASTS[,,"hw"][18,]),
-          as.vector(FORECASTS[,,"hw"][19,]),
-          as.vector(FORECASTS[,,"hw"][20,]),
-          as.vector(FORECASTS[,,"hw"][21,]),
-          as.vector(FORECASTS[,,"hw"][22,]),
-          as.vector(FORECASTS[,,"hw"][23,]),
-          as.vector(FORECASTS[,,"hw"][24,]), 
-          as.vector(FORECASTS[,,"hw"][25,]),
-          as.vector(FORECASTS[,,"hw"][26,]),
-          as.vector(FORECASTS[,,"hw"][27,]),
-          as.vector(FORECASTS[,,"hw"][28,]),
-          as.vector(FORECASTS[,,"hw"][29,]) ))
-
-#FFT<- FORECASTS
-#ensemble_pred <- FORECASTS[,,'AR']+FORECASTS[,,'hw']/2
-#new_forecast <- array( c( FORECASTS , ensemble_pred ) , dim = c( 147 , 240 , 5) )
-#dimnames(new_forecast) <- list(format(FSTUDYDAYS, "%Y-%m-%d"), paste("h_", 1:H, sep = ""), c(model.names,'ensemble') )
-#FORECASTS <- new_forecast
-#FFT<- FORECASTS
-
-#for(i.m in c(model.names,'ensemble') )FFT[,,i.m]<- FORECASTS[, , "true"]
-#RES<- FORECASTS - FFT
-
+# performance metrics
 RMSE <- sqrt(apply(abs(RES)^2, c(3), mean, na.rm = TRUE))
 RMSE
-
+as.data.frame(RMSE) %>% arrange(RMSE)
 
 MAEh <- apply(abs(RES), c(2,3), mean, na.rm = TRUE) 
 MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE) 
 MAE
+as.data.frame(MAE) %>% arrange(MAE)
 
-View(RES[,,'xgb'])
-View(elastic_net_reg$results)
-
+# plot de errors of MAE
 ts.plot(MAEh[1:200,model.names], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
 
-length(as.vector(FORECASTS[,,'xgb'])[4800:5000])
-# error verification
+# error verification post prediction
 ts.plot(as.vector(FORECASTS[,,'xgb'])[14400:(4800*9)],col='red')
 lines(as.vector(FORECASTS[,,'true'])[14400:(4800*9)],col='blue')
 lines(as.vector(FORECASTS[,,'AR'])[14400:(4800*9)],col='green')
 
-ts.plot(as.vector(FORECASTS[,,'elasticNet'])[1:(24*5)],col='red')
-lines(as.vector(FORECASTS[,,'bench'])[1:(24*5)],col='pink')
-lines(as.vector(FORECASTS[,,'true'])[1:(24*5)],col='blue')
-lines(as.vector(FORECASTS[,,'AR'])[1:(24*5)],col='green')
+ts.plot(as.vector(FORECASTS[,,'sgdmodel'])[1:(24*1000)],col='red')
+#lines(as.vector(FORECASTS[,,'bench'])[1:(24*30)],col='pink')
+lines(as.vector(FORECASTS[,,'true'])[1:(24*1000)],col='blue')
+#lines(as.vector(FORECASTS[,,'AR'])[1:(24*10)],col='green')
+lines(as.vector(FORECASTS[,,'xgb'])[1:(24*1000)],col='yellow')
 
+ts.plot(as.vector(FORECASTS["2021-03-30",,'sgdmodel']),col='red')
+ts.plot(as.vector(FORECASTS["2021-03-28",96:(72+48),'true']),col='blue')
+lines(as.vector(FORECASTS["2021-03-30",,'xgb']),col='green')
+
+View(FORECASTS[,,'sgdmodel'])
+View(FORECASTS[1:(20*4),,'xgb'])
+View(FORECASTS[1:(20*4),,'true'])
+#2021-09-08
+
+as.vector(FORECASTS[,,'sgdmodel'])[1:(24*10)]
