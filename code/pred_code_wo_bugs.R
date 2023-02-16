@@ -20,6 +20,7 @@ library(Matrix)
 library(splines)
 
 #####
+library(prophet)
 library(glmnet)
 library(lightgbm)
 library(astsa)
@@ -74,7 +75,7 @@ country <- "NL"
 ZONE <- c(country) 
 i.z <- 1 # later in loop
 zone <- ZONE[i.z]
-CITY <- read_csv("data_test/worldcities.csv")
+CITY <- read_csv("new_data/data_test/worldcities.csv")
 meteovar <- c("TTT", "Rad1h", "Neff", "RR1c", "FF", "FX1", 'R602','TN','TX','RRS1c')
 inith <- 8 ## hour of day to use forecast, 8 means take data from 8am morning
 MET <- list()
@@ -271,7 +272,6 @@ get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
   xbask <- seq(min(xbas), max(xbas), length = k*(length(xbas)-1) +1)
   
   hldbas <- splineDesign(xbask, xbas, outer.ok=TRUE, ord=deg+1)
-  dim(hldbasc)
   hldbasc <- t(apply(hldbas,1,cumsum))
   hldbasx<- hldbas #cbind(hldbas,hldbasc)
   K <- dim(hldbasx)[2]
@@ -322,7 +322,7 @@ DATA$FF <- na_interpolation(DATA$FF, option='spline')
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel'
-model.names <- c('sgdmodel',"xgb","AR", "true", "bench") 
+model.names <- c('prophet','sgdmodel',"xgb","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -424,7 +424,7 @@ for (i.m in seq_along(model.names)) {
     }
     ls_ds_interaction <- Filter(Negate(is.null), ls_ds_interaction)
     ls_ds_interaction <- str_split(ls_ds_interaction,'and')
-    mx_interaction <- matrix(,ncol = 2, nrow = length(ls_ds_interaction) )
+    mx_interaction <- matrix(NA, ncol = 2, nrow = length(ls_ds_interaction) )
     for (i_comb in 1:length(ls_ds_interaction)) mx_interaction[i_comb,] <- c(ls_ds_interaction[[i_comb]][1],ls_ds_interaction[[i_comb]][2])
     ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
     
@@ -699,8 +699,56 @@ for (i.m in seq_along(model.names)) {
         test_sparse  = Matrix(as.matrix(filter_test %>% select(-ytarget)), sparse=TRUE)
         pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
-        #ts.plot(as.vector(t(pred)))
+        ts.plot(as.vector(t(pred)))
+        lines(as.vector(t(filter_test %>% select(ytarget)) ) , col='red')
 
+      }
+      if (mname == "prophet"){
+        #5+'jj'
+        dim(DATAtrainwow)
+        DATAtrainwow <- DATAtrain[DATAtrain$horizon <= S, ]
+        DATAtestwow <- (DATAtest[DATAtest$horizon <= S, ] %>% arrange(DateTime))
+        y <- unlist(DATAtrainwow[, ytarget])
+        yn <- length(y)
+        DATAwow <- c(y, unlist(DATAtestwow[, ytarget]))
+        DATAwow <- zoo::na.locf(DATAwow)
+        
+        df <- data.frame(
+          ds = DATAtrainwow$DateTime,
+          y = y
+        )
+        m <- prophet(df, yearly.seasonality = TRUE, weekly.seasonality = TRUE,
+                     daily.seasonality = TRUE, seasonality.mode = 'additive', fit = TRUE)
+        prediction.n.ahead = H*length(seqid)
+        
+        future <- make_future_dataframe(m, periods = prediction.n.ahead )
+        future <- tail(future, prediction.n.ahead)
+        rownames(future) <- NULL
+        total_nrow <- dim(future)[1]
+        n_per_chunk <- 100
+        n_chunk <- ceiling(total_nrow/n_per_chunk)
+        list_sequence <- list()
+        for (i in 0:(n_chunk-1)){
+          #cat(i, '\n')
+          lower_ind <- ((i*n_per_chunk)+1)
+          upper_ind <- ((i+1)*n_per_chunk)
+          values_future <- (future[c(lower_ind:upper_ind),])
+          values_future <- values_future[!is.na(values_future)]
+          list_sequence[[i+1]] <- values_future
+        }
+        
+        estimate.prophet <- function(i, m, list_sequence){
+          l <- list(ds = list_sequence[[i]])
+          df <- as.data.frame(l)
+          forecast_sample <- predict(m, df)
+          return(list(ds_pred = forecast_sample) )
+        }
+        est.prophet <- mclapply(1:length(list_sequence), FUN = function(i) estimate.prophet(i, m, list_sequence))
+        
+        ls_predict_prophet <- list()
+        for (i in 1:length(est.prophet)) ls_predict_prophet[[i]] <- est.prophet[[i]]$ds_pred$yhat
+        pred <- matrix(unlist(ls_predict_prophet), nrow = length(seqid), ncol =  H)
+        
       }
       if (mname == "AR") {
         DATAtrainwow <- DATAtrain[DATAtrain$horizon <= S, ]
@@ -714,7 +762,7 @@ for (i.m in seq_along(model.names)) {
           om <- (length(zoo::na.locf(y))-1)
         }
         mod <- ar(zoo::na.locf(y), order.max = om)
-        pred <- matrix(, length(seqid), H)
+        pred <- matrix(NA, length(seqid), H)
         for (i.NN in 1:length(seqid)) pred[i.NN, ] <- predict(mod, newdata = DATAwow[yn + (-mod$order + 1):0 + (i.NN - 1) * S], n.ahead = H)$pred
       }
       if (mname == "ARMA") {
@@ -763,7 +811,6 @@ for (i.m in seq_along(model.names)) {
         mod <- hw(zoo::na.locf(ym), h = H*length(seqid), seasonal= "additive",
                   lambda= 'auto', damped= FALSE, initial = "optimal",
                   exponential= FALSE, alpha = NULL, beta= NULL, gamma = NULL)
-        
         pred_values_all_days <- predict(mod, n.ahead = H*length(seqid))$mean
         pred <- matrix(pred_values_all_days, nrow = length(seqid), ncol =  H)
         
@@ -790,7 +837,8 @@ for (i.m in seq_along(model.names)) {
 } # i.m
 
 #Update FORECASTS with ensembles
-model.names <- c("xgb","AR", "true", "bench", 'sgdmodel',
+#'sgdmodel',"xgb","AR", "true", "bench"
+model.names <- c('sgdmodel', "xgb","AR", "true", "bench",
                  'ensemble.sgd.xgb',
                  'ensemble.sgd.AR',
                  'ensemble.sgd.xgb.AR')
@@ -805,9 +853,9 @@ nw.forecasts[,, model.names[2]] <- FORECASTS[,,model.names[2]]
 nw.forecasts[,, model.names[3]] <- FORECASTS[,,model.names[3]]
 nw.forecasts[,, model.names[4]] <- FORECASTS[,,model.names[4]]
 nw.forecasts[,, model.names[5]] <- FORECASTS[,,model.names[5]]
-nw.forecasts[,, model.names[6]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[1]])/2
-nw.forecasts[,, model.names[7]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[2]])/2
-nw.forecasts[,, model.names[8]] <- (FORECASTS[,,model.names[5]] + FORECASTS[,,model.names[2]]+
+nw.forecasts[,, model.names[6]] <- (FORECASTS[,,model.names[2]] + FORECASTS[,,model.names[1]])/2
+nw.forecasts[,, model.names[7]] <- (FORECASTS[,,model.names[3]] + FORECASTS[,,model.names[1]])/2
+nw.forecasts[,, model.names[8]] <- (FORECASTS[,,model.names[3]] + FORECASTS[,,model.names[2]]+
                                       FORECASTS[,,model.names[1]])/3
 
 FORECASTS <- nw.forecasts
@@ -833,9 +881,9 @@ abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
 
 # error verification post prediction
-ts.plot(as.vector(FORECASTS[,,'xgb'])[14400:(4800*9)],col='red')
-lines(as.vector(FORECASTS[,,'true'])[14400:(4800*9)],col='blue')
-lines(as.vector(FORECASTS[,,'AR'])[14400:(4800*9)],col='green')
+ts.plot(as.vector(FORECASTS[,,'xgb'])[1:(24*100)],col='red')
+lines(as.vector(FORECASTS[,,'true'])[1:(24*100)],col='blue')
+lines(as.vector(FORECASTS[,,'AR'])[1:(24*100)],col='green')
 
 ts.plot(as.vector(FORECASTS[,,'sgdmodel'])[1:(24*1000)],col='red')
 #lines(as.vector(FORECASTS[,,'bench'])[1:(24*30)],col='pink')
@@ -843,9 +891,10 @@ lines(as.vector(FORECASTS[,,'true'])[1:(24*1000)],col='blue')
 #lines(as.vector(FORECASTS[,,'AR'])[1:(24*10)],col='green')
 lines(as.vector(FORECASTS[,,'xgb'])[1:(24*1000)],col='yellow')
 
-ts.plot(as.vector(FORECASTS["2021-03-30",,'sgdmodel']),col='red')
-ts.plot(as.vector(FORECASTS["2021-03-28",96:(72+48),'true']),col='blue')
-lines(as.vector(FORECASTS["2021-03-30",,'xgb']),col='green')
+ts.plot(as.vector(FORECASTS[200,,'sgdmodel']),col='red')
+lines(as.vector(FORECASTS[200,,'true']),col='blue')
+lines(as.vector(FORECASTS[200,,'xgb']),col='green')
+lines(as.vector(FORECASTS[200,,'AR']),col='orange')
 
 View(FORECASTS[,,'sgdmodel'])
 View(FORECASTS[1:(20*4),,'xgb'])
