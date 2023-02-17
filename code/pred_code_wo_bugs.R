@@ -312,7 +312,7 @@ DATA$FF <- na_interpolation(DATA$FF, option='spline')
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
-model.names <- c('rf','sgdmodel', "gb","AR", "true", "bench") 
+model.names <- c("AR",'rf','sgdmodel', "gb","AR", "true", "bench") 
 M <- length(model.names)
 ytarget <- yt_name
 # for (i.m in model.names)
@@ -322,6 +322,12 @@ cat('dimension of result matrix*************************************************
 dim(FORECASTS)
 #define ls of training time
 ls_train_time <- list()
+
+#define lists to save results and models
+rf_results <- list()
+gb_results <- list()
+sgd_results <- list()
+ar_results <- list()
 
 # run model estimation
 S <- 24
@@ -343,7 +349,7 @@ for (i.m in seq_along(model.names)) {
       list(
         boosting= c("gbdt","dart"),
         obj = c("tweedie"),
-        tweedie_variance_power = c(1.1),
+        tweedie_variance_power = seq(1.1,1.9,0.1),
         metric = c('rmse'),
         num_leaves = seq(20, 27, 1),
         max_depth = seq(7,10,1),
@@ -360,14 +366,14 @@ for (i.m in seq_along(model.names)) {
       list(
         boosting= c("rf"),
         obj = c("tweedie"),
-        tweedie_variance_power = c(1.1),
+        tweedie_variance_power = seq(1.1,1.9,0.1),
         metric = c('rmse'),
         max_depth = seq(5,12,1),
         num_leaves = seq(20, 27, 1),
-        num_iterations = seq(40, 60, 3),
-        max_depth = seq(7,10,1),
+        num_iterations = seq(40, 50, 3),
         lambda_l1 = seq(0.01, 0.1, 0.01),
-        lambda_l2 = seq(0.01, 0.1, 0.01)
+        lambda_l2 = seq(0.01, 0.1, 0.01),
+        learning_rate = seq(0.18, 0.3, 0.02)
       )) #"mse"
   }
   
@@ -578,9 +584,11 @@ for (i.m in seq_along(model.names)) {
         estimate.lgb <- function(hyper_combi, lgb.train, lgb.valid, lgb.gridFilter){
           ls_params <- as.list(data.frame(lgb.gridFilter[hyper_combi,]) )
           obj <- as.character(ls_params$obj)
-          ls_params <- within(ls_params, rm(obj))
+          boosting <- as.character(ls_params$boosting)
+          metric <- as.character(ls_params$metric)
+          ls_params <- within(ls_params, rm(obj, boosting, metric))
           watchlist <- list(validation = lgb.valid)
-          lgb_alg <- lgb.train(params = ls_params,obj = obj,
+          lgb_alg <- lgb.train(params = ls_params,obj = obj, boosting = boosting, metric = metric,
                                data = lgb.train, valids = watchlist,
                                early_stopping_rounds = 70,verbose = 1,
                                eval_freq = 10, force_col_wise=TRUE,
@@ -602,6 +610,12 @@ for (i.m in seq_along(model.names)) {
         for (i in 1:nrow(lgb.gridFilter)) rmse_vec[i] <- est.lgb[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
         best_tune_model  <- est.lgb[[id_min_rmse]]$mod
+        best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        # save results
+        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        gb_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
+                                             best_ds_feat_import = best_ds_feat_import)
+        
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
         dim(test_sparse)
@@ -643,30 +657,40 @@ for (i.m in seq_along(model.names)) {
         estimate.rf <- function(hyper_combi, rf.train, rf.valid, rf.gridFilter){
           ls_params <- as.list(data.frame(rf.gridFilter[hyper_combi,]) )
           obj <- as.character(ls_params$obj)
-          ls_params <- within(ls_params, rm(obj))
-          watchlist <- list(validation = rf.valid)
-          rf_alg <- lgb.train(params = ls_params,obj = obj,
+          boosting <- as.character(ls_params$boosting)
+          metric <- as.character(ls_params$metric)
+          ls_params <- within(ls_params, rm(obj, boosting, metric))
+          watchlist <- list(validation = rf.valid) #eval_freq = 5 bagging_freq = 5)
+          rf_alg <- lgb.train(params = ls_params, obj = obj, metric = metric, boosting= boosting,
                                data = rf.train, valids = watchlist,
-                               early_stopping_rounds = 70,verbose = 1,
-                               eval_freq = 10, force_col_wise=TRUE,
-                               nthread = 6, bagging_fraction = 0.8, feature_fraction = 0.8)
-          return( list(mod = rf_alg, score = rf_alg$best_score) )
+                              early_stopping_rounds = 70, verbose = 1,
+                              force_col_wise=TRUE,
+                              nthread = 6, bagging_fraction = 0.8, feature_fraction = 0.8,
+                              bagging_freq = 5, eval_freq = 5)
+          return( list(mod = rf_alg, score = rf_alg$best_score ) )
         }
         
         #recent_time <- Sys.time()
         cat('train rf.....\n')
-        est.rf <- lapply(1:nrow(rf.gridFilter), FUN = function(hyper_combi) estimate.lgb(hyper_combi,
+        est.rf <- lapply(1:nrow(rf.gridFilter), FUN = function(hyper_combi) estimate.rf(hyper_combi,
                                                                                            rf.train,
                                                                                            rf.valid,
                                                                                            rf.gridFilter))
         cat('finish rf.....\n')
         #last_time <- Sys.time()
-        #diff_mode_iter <- difftime(recent_time,last_time)
+        #difftime(recent_time,last_time)
         #View(cbind(lgb.gridFilter,rmse_vec))
+        as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
         rmse_vec = c()
         for (i in 1:nrow(rf.gridFilter)) rmse_vec[i] <- est.rf[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
-        best_tune_model  <- est.rf[[id_min_rmse]]$mod
+        best_tune_model <- est.rf[[id_min_rmse]]$mod
+        best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        # save results
+        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        rf_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
+                                             best_ds_feat_import = best_ds_feat_import)
+        
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
         cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
@@ -752,6 +776,10 @@ for (i.m in seq_along(model.names)) {
         id_min_rmse <- which.min(rmse_vec)
         best_lambda <- lambdas[id_min_rmse]
         best_tune_model <- est.sgd[[id_min_rmse]]$mod
+        # save results
+        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        sgd_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec))
+        
         test_sparse  = Matrix(as.matrix(filter_test %>% select(-ytarget)), sparse=TRUE)
         pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
@@ -819,6 +847,10 @@ for (i.m in seq_along(model.names)) {
         }
         mod <- ar(zoo::na.locf(y), order.max = om)
         pred <- matrix(NA, length(seqid), H)
+        # save results
+        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        ar_results[[id_save_result]] <- list(best_tune_model = mod)
+        
         for (i.NN in 1:length(seqid)) pred[i.NN, ] <- predict(mod, newdata = DATAwow[yn + (-mod$order + 1):0 + (i.NN - 1) * S], n.ahead = H)$pred
       }
       if (mname == "ARMA") {
