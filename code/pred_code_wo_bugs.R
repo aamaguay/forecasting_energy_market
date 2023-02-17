@@ -308,13 +308,106 @@ DATA$FF <- na_interpolation(DATA$FF, option='spline')
 #dim(tmp)
 #dim(DATA)
 
+cat("data preparation for gb, rf, sgd*****************************************\n")
+S <- 24
+ytarget <- yt_name
+LAGS <- S * c(1:14, 21, 24, 28, 32, 35 ) 
+vec <- as.integer(DATA$DateTime)
+subs <- match(unique(vec), vec)
+TMPDATA <- bind_cols(DateTime = DATA$DateTime[subs], 
+                     shiftDST(DATA[subs,ytarget],
+                              summer = DATA$SummerTime[subs], 
+                              clag = LAGS) )
 
+dff <- as.data.frame(base::as.factor(DATA$HoD))
+names(dff) <- c("HoD")
+MHoW <- as.matrix(sparse.model.matrix(~.-1, data = dff))
+
+dfDoW <- as.data.frame(base::as.factor(DATA$DoW))
+names(dfDoW) <- c("DoW")
+MDoW <- as.matrix(sparse.model.matrix(~.-1,data = dfDoW))
+
+dfMoY <- as.data.frame(base::as.factor(DATA$MoY))
+names(dfMoY) <- c("MoY")
+MMoY <- as.matrix(sparse.model.matrix(~.-1,data = dfMoY))
+
+dfQoY <- as.data.frame(base::as.factor(DATA$QoY))
+names(dfQoY) <- c("QoY")
+MQoY <- as.matrix(sparse.model.matrix(~.-1,data = dfQoY))
+
+weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
+colnames(weekend_mx) <- c("weekend")
+all_dummys <- cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx )
+
+cat("interaction features****************************************************\n")
+paste_hod <- paste("HoD",0:22, sep="")
+paste_dow <- paste("DoW",1:6, sep="")
+paste_moy <- paste("MoY",1:11, sep="")
+paste_qoy <- paste("QoY",1:3, sep="")
+paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM", "QoY"), 
+                                       function(x) c(paste(x,'_sin',sep = ''), paste(x,'_cos',sep = '')   )) )
+
+col_comb_features <- c(paste_dow, paste_hod, paste_moy, paste_qoy, 'weekend' )
+all_comb <- combn(col_comb_features, 2)
+ls_ds_interaction <- list()
+for (ncomb in 1:ncol(all_comb)){
+  pt_1 <- all_comb[1,ncomb]
+  pt_2 <- all_comb[2,ncomb]
+  if ( substr(pt_1, start=1, stop=3) != substr(pt_2, start=1, stop=3) ){
+    ls_ds_interaction[[ncomb]] <- paste(pt_1,pt_2,sep = 'and')
+  }
+}
+
+ls_ds_interaction <- Filter(Negate(is.null), ls_ds_interaction)
+ls_ds_interaction <- str_split(ls_ds_interaction,'and')
+mx_interaction <- matrix(NA, ncol = 2, nrow = length(ls_ds_interaction) )
+for (i_comb in 1:length(ls_ds_interaction)) mx_interaction[i_comb,] <- c(ls_ds_interaction[[i_comb]][1],ls_ds_interaction[[i_comb]][2])
+ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
+## optimize
+ds_tmp_orig <- all_dummys[,col_comb_features]
+name_vector_comb <- sub("\\.var", ".", do.call(paste, c(ds_interaction, sep=".")))
+
+dim(ds_interaction)
+length(name_vector_comb)
+
+create.combination.matrix <- function(i, ds_interaction, name_vector_comb, ds_tmp_orig){
+  first_feature <- as.character(ds_interaction[i,'x'][[1]])
+  second_feature <- as.character(ds_interaction[i,'y'][[1]])
+  result_comb <- ds_tmp_orig[,first_feature]*ds_tmp_orig[,second_feature]
+  name <- name_vector_comb[i][[1]]
+
+  return( list(name = result_comb ) )
+}
+
+est.matrix <- mclapply(1:length(name_vector_comb), FUN = function(i) create.combination.matrix(i, ds_interaction,
+                                                                                              name_vector_comb,
+                                                                                              ds_tmp_orig ))
+
+
+mx.result <- matrix(unlist(est.matrix), ncol = length(est.matrix), byrow=TRUE)
+colnames(mx.result) <- name_vector_comb
+mx.result.tibble <- as.tibble(mx.result, ncol = length(est.matrix), byrow=TRUE)
+#sparse.mx.result <- Matrix(unlist(est.matrix), nrow = nrow(DATA), ncol = length(est.matrix), sparse = TRUE)
+#object.size(mxx)
+
+
+cat("finish interaction features**************************************************\n")
+
+#define features to use
+features_holidays <- colnames(tmp)
+features_interaction <- name_vector_comb
+features_x <- c(paste_hod, paste_dow, paste_moy,
+                paste_qoy, paste("x_lag_",S * c(1:14, 21, 24, 28, 32, 35 ), sep=""),
+                paste_seasonality, features_interaction, features_holidays,
+                'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF")
+
+TMPDATA <- cbind(TMPDATA, as_tibble(all_dummys[subs, -unlist(list(ncol(all_dummys)))]), mx.result.tibble[subs,])
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
-model.names <- c("AR",'rf','sgdmodel', "gb","AR", "true", "bench") 
+model.names <- c('sgdmodel', "gb","AR", "true") #"rf", "bench") 
 M <- length(model.names)
-ytarget <- yt_name
+
 # for (i.m in model.names)
 FORECASTS <- array(NA, dim = c(N, H, M))
 dimnames(FORECASTS) <- list(format(FSTUDYDAYS, "%Y-%m-%d"), paste("h_", 1:H, sep = ""), model.names)
@@ -330,7 +423,7 @@ sgd_results <- list()
 ar_results <- list()
 
 # run model estimation
-S <- 24
+
 for (i.m in seq_along(model.names)) {
   mname <- model.names[i.m]
   init_time <- Sys.time()
@@ -387,87 +480,9 @@ for (i.m in seq_along(model.names)) {
   
   # model specific data preparation for the forecasting study [model dependent]: 
   if(mname %in% c("GAM", "gb","rf", "elasticNet", "sgdmodel")){
-    #DATA$DateTime
-    vec <- as.integer(DATA$DateTime)
-    subs <- match(unique(vec), vec)
-    TMPDATA <- bind_cols(DateTime = DATA$DateTime[subs], 
-                         shiftDST(DATA[subs,ytarget],
-                                  summer = DATA$SummerTime[subs], 
-                                  clag = LAGS) )
-
-    #bind_cols(EDAT[[zone]][, "DateTime"], as.data.table(shift(as.data.frame(EDAT[[zone]][, 1:2 + 1]), LAGS, give.names = TRUE)))
-    dff <- as.data.frame(base::as.factor(DATA$HoD))
-    names(dff) <- c("HoD")
-    MHoW <- as.matrix(sparse.model.matrix(~.-1, data = dff))
     
-    dfDoW <- as.data.frame(base::as.factor(DATA$DoW))
-    names(dfDoW) <- c("DoW")
-    MDoW <- as.matrix(sparse.model.matrix(~.-1,data = dfDoW))
-    
-    dfMoY <- as.data.frame(base::as.factor(DATA$MoY))
-    names(dfMoY) <- c("MoY")
-    MMoY <- as.matrix(sparse.model.matrix(~.-1,data = dfMoY))
-    
-    dfQoY <- as.data.frame(base::as.factor(DATA$QoY))
-    names(dfQoY) <- c("QoY")
-    MQoY <- as.matrix(sparse.model.matrix(~.-1,data = dfQoY))
-    
-    weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
-    colnames(weekend_mx) <- c("weekend")
-    all_dummys <- cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx )
-
-    cat("interaction features****************************************************\n")
-    paste_hod <- paste("HoD",0:22, sep="")
-    paste_dow <- paste("DoW",1:6, sep="")
-    paste_moy <- paste("MoY",1:11, sep="")
-    paste_qoy <- paste("QoY",1:3, sep="")
-    paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM", "QoY"), 
-                                           function(x) c(paste(x,'_sin',sep = ''), paste(x,'_cos',sep = '')   )) )
-    
-    col_comb_features <- c(paste_dow, paste_hod, paste_moy, paste_qoy, 'weekend' )
-    all_comb <- combn(col_comb_features, 2)
-    ls_ds_interaction <- list()
-    for (ncomb in 1:ncol(all_comb)){
-      #View(all_comb)
-      pt_1 <- all_comb[1,ncomb]
-      pt_2 <- all_comb[2,ncomb]
-      if ( substr(pt_1, start=1, stop=3) != substr(pt_2, start=1, stop=3) ){
-        ls_ds_interaction[[ncomb]] <- paste(pt_1,pt_2,sep = 'and')
-      }
-    }
-    ls_ds_interaction <- Filter(Negate(is.null), ls_ds_interaction)
-    ls_ds_interaction <- str_split(ls_ds_interaction,'and')
-    mx_interaction <- matrix(NA, ncol = 2, nrow = length(ls_ds_interaction) )
-    for (i_comb in 1:length(ls_ds_interaction)) mx_interaction[i_comb,] <- c(ls_ds_interaction[[i_comb]][1],ls_ds_interaction[[i_comb]][2])
-    ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
-    
-    tmp_ds_transf <- list()
-
-    tmp_ds_transf[[1]] <- all_dummys[,col_comb_features]
-    ls_ds_transf <- list()
-    for (id_ds in length(tmp_ds_transf)){
-      ds_tmp_orig <- tmp_ds_transf[[id_ds]]
-      comb_vector <- ds_interaction
-      name_vector_comb <- sub("\\.var", ".", do.call(paste, c(comb_vector, sep=".")))
-      formula_evaluate <- sprintf("transform(ds_tmp_orig, %s = %s*%s)", name_vector_comb, 
-                                  comb_vector[,1], comb_vector[,2])
-      colnames(ds_tmp_orig)
-      for(i in seq_along(formula_evaluate)) ds_tmp_orig <- eval(parse(text = formula_evaluate[i]))
-      final_transf_ds <- ds_tmp_orig[,c(name_vector_comb)]
-      ls_ds_transf[[id_ds]] <- final_transf_ds
-    }
-    cat("finish interaction features**************************************************\n")
-    #define features to use
-    features_holidays <- colnames(tmp)
-    features_interaction <- colnames(ls_ds_transf[[1]])
-    features_x <- c(paste_hod, paste_dow, paste_moy,
-                    paste_qoy, paste("x_lag_",S * c(1:14, 21, 24, 28, 32, 35 ), sep=""),
-                    paste_seasonality, features_interaction, features_holidays,
-                    'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF")
-    
-    TMPDATA <- cbind(TMPDATA, all_dummys[subs, -unlist(list(ncol(all_dummys)))], ls_ds_transf[[1]][subs,])
-    
-    FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon) 
+    FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon)
+    FDATA <- FDATA[,c(ytarget, "DateTime", "horizon", features_x)]
     
     # define formula for gb and rf
     formula_str <- paste(
@@ -680,7 +695,7 @@ for (i.m in seq_along(model.names)) {
         #last_time <- Sys.time()
         #difftime(recent_time,last_time)
         #View(cbind(lgb.gridFilter,rmse_vec))
-        as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        #as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
         rmse_vec = c()
         for (i in 1:nrow(rf.gridFilter)) rmse_vec[i] <- est.rf[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
@@ -748,7 +763,10 @@ for (i.m in seq_along(model.names)) {
         filter_valid <- filter_train %>% tail(20)
         filter_train <- filter_train %>% head(nrow(filter_train)-20)
         
-        lambdas <- c(10,20,30,40 )
+        set.seed(5)
+        full_lambdas <- seq(10,50)
+        samp <- sample(1:length(full_lambdas), 4)
+        lambdas <- full_lambdas[samp]
         alphas <- 1
         #5+"kk"
         estimate.sgd <- function(id_val, filter_train, filter_valid, alphas, lambdas, ytarget){
