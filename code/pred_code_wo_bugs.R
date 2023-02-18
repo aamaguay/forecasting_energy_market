@@ -598,7 +598,7 @@ for (i.m in seq_along(model.names)) {
           replace(is.na(.), 0)
         
         set.seed(11)
-        samp <- sample(1:nrow(lgb.grid ), 12)
+        samp <- sample(1:nrow(lgb.grid ), 5)
         lgb.gridFilter <- lgb.grid [samp,]
         # create datasets
         lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
@@ -674,7 +674,7 @@ for (i.m in seq_along(model.names)) {
           replace(is.na(.), 0)
         
         set.seed(2)
-        samp <- sample(1:nrow(rf.grid ), 12)
+        samp <- sample(1:nrow(rf.grid ), 5)
         rf.gridFilter <- rf.grid[samp,]
         # create datasets
         rf.test <- lgb.Dataset(data = as.matrix(filter_test),
@@ -779,9 +779,10 @@ for (i.m in seq_along(model.names)) {
         filter_valid <- filter_train %>% tail(20)
         filter_train <- filter_train %>% head(nrow(filter_train)-20)
         colSums(filter_test)
+        
         set.seed(5)
-        full_lambdas <- seq(10,50, 3)
-        samp <- sample(1:length(full_lambdas), 4)
+        full_lambdas <- c(10,20,30,40) #seq(10,50, 3)
+        samp <- sample(1:length(full_lambdas), 2)
         lambdas <- full_lambdas[samp]#c(10,20,30,40)
         alphas <- 1
         #5+"kk"
@@ -969,13 +970,13 @@ ls_train_time
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
-#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_orig.txt')
-#dim(read.table('new_data/results_18feb_v02/gb_orig.txt'))
-#ts.plot(FORECASTS[,,'sgdmodel'][140,])
+#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_5comb.txt')
+#dim(read.table('new_data/results_18feb_v02/gb_5comb.txt'))
+#ts.plot(FORECASTS[,,'rf'][200,])
 
-mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel.txt')
-mx.gb <- read.table('new_data/results_18feb_v02/gb_orig.txt')
-mx.rf <- read.table('new_data/results_18feb_v02/rf.txt')
+mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb.txt')
+mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb.txt')
+mx.rf <- read.table('new_data/results_18feb_v02/rf_5comb.txt')
 mx.AR <- read.table('new_data/results_18feb_v02/AR.txt')
 mx.true <- read.table('new_data/results_18feb_v02/true.txt')
 mx.bench <- read.table('new_data/results_18feb_v02/bench.txt')
@@ -1023,6 +1024,7 @@ RES <- FORECASTS - FFT
 RMSE <- sqrt(apply(abs(RES)^2, c(3), mean, na.rm = TRUE))
 RMSE
 as.data.frame(RMSE) %>% arrange(RMSE)
+
 
 MAEh <- apply(abs(RES), c(2,3), mean, na.rm = TRUE) 
 MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE) 
