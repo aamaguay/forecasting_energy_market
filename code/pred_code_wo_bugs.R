@@ -311,7 +311,7 @@ DATA$FF <- na_interpolation(DATA$FF, option='spline')
 cat("data preparation for gb, rf, sgd*****************************************\n")
 S <- 24
 ytarget <- yt_name
-LAGS <- S * c(1:14, 21, 24, 28, 32, 35 ) 
+LAGS <- S * c(1:14, 21, 28)
 vec <- as.integer(DATA$DateTime)
 subs <- match(unique(vec), vec)
 TMPDATA <- bind_cols(DateTime = DATA$DateTime[subs], 
@@ -337,7 +337,7 @@ MQoY <- as.matrix(sparse.model.matrix(~.-1,data = dfQoY))
 
 weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
 colnames(weekend_mx) <- c("weekend")
-all_dummys <- cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx )
+all_dummys <- as_tibble(cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx ))
 
 cat("interaction features****************************************************\n")
 paste_hod <- paste("HoD",0:22, sep="")
@@ -350,62 +350,44 @@ paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM"
 col_comb_features <- c(paste_dow, paste_hod, paste_moy, paste_qoy, 'weekend' )
 all_comb <- combn(col_comb_features, 2)
 ls_ds_interaction <- list()
+ls_ds_interaction_pt <- list()
 for (ncomb in 1:ncol(all_comb)){
   pt_1 <- all_comb[1,ncomb]
   pt_2 <- all_comb[2,ncomb]
   if ( substr(pt_1, start=1, stop=3) != substr(pt_2, start=1, stop=3) ){
     ls_ds_interaction[[ncomb]] <- paste(pt_1,pt_2,sep = 'and')
+    ls_ds_interaction_pt[[ncomb]] <- paste(pt_1,pt_2,sep = '.')
   }
 }
 
 ls_ds_interaction <- Filter(Negate(is.null), ls_ds_interaction)
 ls_ds_interaction <- str_split(ls_ds_interaction,'and')
-mx_interaction <- matrix(NA, ncol = 2, nrow = length(ls_ds_interaction) )
-for (i_comb in 1:length(ls_ds_interaction)) mx_interaction[i_comb,] <- c(ls_ds_interaction[[i_comb]][1],ls_ds_interaction[[i_comb]][2])
-ds_interaction <- setNames(data.frame(mx_interaction), c('x','y') )
-## optimize
-ds_tmp_orig <- all_dummys[,col_comb_features]
-name_vector_comb <- sub("\\.var", ".", do.call(paste, c(ds_interaction, sep=".")))
 
-dim(ds_interaction)
-length(name_vector_comb)
-
-create.combination.matrix <- function(i, ds_interaction, name_vector_comb, ds_tmp_orig){
-  first_feature <- as.character(ds_interaction[i,'x'][[1]])
-  second_feature <- as.character(ds_interaction[i,'y'][[1]])
-  result_comb <- ds_tmp_orig[,first_feature]*ds_tmp_orig[,second_feature]
-  name <- name_vector_comb[i][[1]]
-
-  return( list(name = result_comb ) )
+estimate.vector <- function(i, ls_ds_interaction, all_dummys){
+  result <- (all_dummys[,ls_ds_interaction[[i]][1]]*all_dummys[,ls_ds_interaction[[i]][2]])
+  return(result)
 }
-
-est.matrix <- mclapply(1:length(name_vector_comb), FUN = function(i) create.combination.matrix(i, ds_interaction,
-                                                                                              name_vector_comb,
-                                                                                              ds_tmp_orig ))
-
-
-mx.result <- matrix(unlist(est.matrix), ncol = length(est.matrix), byrow=TRUE)
-colnames(mx.result) <- name_vector_comb
-mx.result.tibble <- as.tibble(mx.result, ncol = length(est.matrix), byrow=TRUE)
-#sparse.mx.result <- Matrix(unlist(est.matrix), nrow = nrow(DATA), ncol = length(est.matrix), sparse = TRUE)
-#object.size(mxx)
-
+est.result <- lapply(1:length(ls_ds_interaction), FUN = function(i) estimate.vector(i, ls_ds_interaction, all_dummys ) )
+mx.result.tibble <- do.call(cbind, est.result)
+colnames(mx.result.tibble) <- unlist(ls_ds_interaction_pt)
+mx.result.tibble <- as.tibble(mx.result.tibble)
 
 cat("finish interaction features**************************************************\n")
 
 #define features to use
 features_holidays <- colnames(tmp)
-features_interaction <- name_vector_comb
+features_interaction <- unlist(ls_ds_interaction_pt)
 features_x <- c(paste_hod, paste_dow, paste_moy,
-                paste_qoy, paste("x_lag_",S * c(1:14, 21, 24, 28, 32, 35 ), sep=""),
+                paste_qoy, paste("x_lag_",S * c(1:14, 21, 28), sep=""),
                 paste_seasonality, features_interaction, features_holidays,
                 'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF")
 
-TMPDATA <- cbind(TMPDATA, as_tibble(all_dummys[subs, -unlist(list(ncol(all_dummys)))]), mx.result.tibble[subs,])
+TMPDATA <- cbind(TMPDATA, (all_dummys[subs, -unlist(list(ncol(all_dummys)))]), mx.result.tibble[subs,])
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
-model.names <- c('sgdmodel', "gb","AR", "true") #"rf", "bench") 
+cat('use only one algorith for each iteration in order to avoid ram problems....\n')
+model.names <- c("gb") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
 M <- length(model.names)
 
 # for (i.m in model.names)
@@ -430,7 +412,7 @@ for (i.m in seq_along(model.names)) {
   cat('\\\\\\\\-- begin model', mname, '........i.m*******************************************//////////\n',sep = ' ')
   
   if (mname %in% c("rf","true", "bench", "GAM", "gb", "elasticNet", "sgdmodel")) {
-    LAGS <- S * c(1:14, 21, 24, 28, 32, 35 ) # S * c(1:14, 21, 28)
+    LAGS <- S * c(1:14, 21, 28) # S * c(1:14, 21, 28)
     horizonc <- unique(c(0, findInterval(LAGS, 1:H)))
   } else { # AR
     horizonc <- c(0, H)
@@ -438,20 +420,52 @@ for (i.m in seq_along(model.names)) {
   
   # define hyperparamters once
   if (mname == 'gb'){
+    # version 1
+    #lgb.grid <- base::expand.grid(
+    #  list(
+    #    boosting= c("gbdt","dart"),
+    #    obj = c("tweedie"),
+    #    tweedie_variance_power = seq(1.1,1.9,0.1),
+    #    metric = c('rmse'),
+    #    num_leaves = seq(20, 27, 1),
+    #    max_depth = seq(7,10,1),
+    #    min_sum_hessian_in_leaf = c(6,7),
+    #    learning_rate = seq(0.18, 0.3, 0.02),
+    #    num_iterations = seq(40, 50, 3),
+    #    lambda_l1 = seq(0.01, 0.1, 0.01),
+    #    lambda_l2 = seq(0.01, 0.1, 0.01)
+    #  )) #"mse"
+    
+    # original version
     lgb.grid <- base::expand.grid(
       list(
         boosting= c("gbdt","dart"),
-        obj = c("tweedie"),
-        tweedie_variance_power = seq(1.1,1.9,0.1),
+        obj = c("regression"),
         metric = c('rmse'),
         num_leaves = seq(20, 27, 1),
         max_depth = seq(7,10,1),
         min_sum_hessian_in_leaf = c(6,7),
-        learning_rate = seq(0.18, 0.3, 0.02),
+        learning_rate = seq(0.18, 0.3, 0.01),
         num_iterations = seq(40, 50, 3),
         lambda_l1 = seq(0.01, 0.1, 0.01),
         lambda_l2 = seq(0.01, 0.1, 0.01)
-      )) #"mse"
+      ))
+    
+    #saved as *_v2
+    lgb.grid <- base::expand.grid(
+      list(
+        boosting= c("gbdt","dart"),
+        obj = c("regression"),
+        metric = c('rmse'),
+        num_leaves = seq(20, 35, 3), 
+        max_depth = seq(6,11,2),
+        min_sum_hessian_in_leaf = seq(5,50,5),
+        learning_rate = seq(0.1, 0.25, 0.02),
+        num_iterations = seq(40, 100, 5),
+        lambda_l1 = seq(0.01, 0.1, 0.01),
+        lambda_l2 = seq(0.01, 0.1, 0.01)
+      ))
+    
   }
   #dim(lgb.grid)#96768000
   if (mname == 'rf'){
@@ -480,9 +494,8 @@ for (i.m in seq_along(model.names)) {
   
   # model specific data preparation for the forecasting study [model dependent]: 
   if(mname %in% c("GAM", "gb","rf", "elasticNet", "sgdmodel")){
-    
     FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon)
-    FDATA <- FDATA[,c(ytarget, "DateTime", "horizon", features_x)]
+    #FDATA <- FDATA[,c(ytarget, "DateTime", "horizon", features_x)]
     
     # define formula for gb and rf
     formula_str <- paste(
@@ -494,13 +507,13 @@ for (i.m in seq_along(model.names)) {
       paste( features_holidays, collapse=' + '),' + ',
       paste( paste_seasonality, collapse=' + '),' + ',
       paste( features_interaction, collapse=' + '),' + ',
-      paste( paste("x_lag_",S * c(1:14, 21, 24, 28, 32, 35 ), sep = '', collapse=' + '),
+      paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '),
              '+ weekend + SummerTime + is_day_start + is_day_end + TTT + FF'),sep = '')
     
   } else {
     FDATA <- DATA 
   }
-  DATATEST <- FDATA[unlist(IDTEST), ] 
+  DATATEST <- FDATA[unlist(IDTEST), ]
   
   # begin loop by rows 'N'
   #i.N <- 1
@@ -530,6 +543,7 @@ for (i.m in seq_along(model.names)) {
       hmin <- head(HORIZON[[i.hl]], 1)
       hmax <- tail(HORIZON[[i.hl]], 1)
       idt <- FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon)
+      #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
       #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1],])
       # View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
       DATAtrain <- FDATA[idt, ]
@@ -538,7 +552,6 @@ for (i.m in seq_along(model.names)) {
       for (i.hm in seqid) {
         idtestl[[i.hm]] <- which(DATATEST$DateTime >= FSTUDYDAYS[i.hm] + hmin * 3600 & DATATEST$DateTime <= FSTUDYDAYS[i.hm] + hmax * 3600 & DATATEST$horizon >= hmin & DATATEST$horizon <= hmax & FSTUDYDAYS[i.hm] == DATATEST$forecast_origin)
       }
-      
       
       idtest <- unlist(idtestl)
       length(idtest)
@@ -584,7 +597,7 @@ for (i.m in seq_along(model.names)) {
         filter_test <- DATAtest[, c(features_x)] %>% 
           replace(is.na(.), 0)
         
-        set.seed(1)
+        set.seed(11)
         samp <- sample(1:nrow(lgb.grid ), 12)
         lgb.gridFilter <- lgb.grid [samp,]
         # create datasets
@@ -608,6 +621,7 @@ for (i.m in seq_along(model.names)) {
                                early_stopping_rounds = 70,verbose = 1,
                                eval_freq = 10, force_col_wise=TRUE,
                                nthread = 6, bagging_fraction = 0.8, feature_fraction = 0.8)
+          
           return( list(mod = lgb_alg, score = lgb_alg$best_score) )
         }
         
@@ -625,11 +639,11 @@ for (i.m in seq_along(model.names)) {
         for (i in 1:nrow(lgb.gridFilter)) rmse_vec[i] <- est.lgb[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
         best_tune_model  <- est.lgb[[id_min_rmse]]$mod
-        best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        #best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
         # save results
-        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        gb_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
-                                             best_ds_feat_import = best_ds_feat_import)
+        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        #gb_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
+        #                                     best_ds_feat_import = best_ds_feat_import)
         
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
@@ -637,6 +651,8 @@ for (i.m in seq_along(model.names)) {
         cat(length(HORIZON[[i.hl]]),'----' ,length(seqid),'\n')
         pred <- t(matrix(predict(best_tune_model, data = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
+        best_tune_model$params
+
         
         #pred_yt = predict(gbm_op, filter_train %>% select(-ytarget))
         #ts.plot(cbind(DATAtest[, c(ytarget)], pred_y), col= c('red','blue'))
@@ -700,11 +716,11 @@ for (i.m in seq_along(model.names)) {
         for (i in 1:nrow(rf.gridFilter)) rmse_vec[i] <- est.rf[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
         best_tune_model <- est.rf[[id_min_rmse]]$mod
-        best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        #best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
         # save results
-        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        rf_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
-                                             best_ds_feat_import = best_ds_feat_import)
+        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        #rf_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
+        #                                     best_ds_feat_import = best_ds_feat_import)
         
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
@@ -762,11 +778,11 @@ for (i.m in seq_along(model.names)) {
           replace(is.na(.), 0)
         filter_valid <- filter_train %>% tail(20)
         filter_train <- filter_train %>% head(nrow(filter_train)-20)
-        
+        colSums(filter_test)
         set.seed(5)
-        full_lambdas <- seq(10,50)
+        full_lambdas <- seq(10,50, 3)
         samp <- sample(1:length(full_lambdas), 4)
-        lambdas <- full_lambdas[samp]
+        lambdas <- full_lambdas[samp]#c(10,20,30,40)
         alphas <- 1
         #5+"kk"
         estimate.sgd <- function(id_val, filter_train, filter_valid, alphas, lambdas, ytarget){
@@ -795,12 +811,14 @@ for (i.m in seq_along(model.names)) {
         best_lambda <- lambdas[id_min_rmse]
         best_tune_model <- est.sgd[[id_min_rmse]]$mod
         # save results
-        id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        sgd_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec))
+        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
+        #sgd_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec))
+        #predict(best_tune_model, newdata = test_sparse)
         
         test_sparse  = Matrix(as.matrix(filter_test %>% select(-ytarget)), sparse=TRUE)
         pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
+        #View(pred)
         #ts.plot(as.vector(t(pred)))
         #lines(as.vector(t(filter_test %>% select(ytarget)) ) , col='red')
 
@@ -942,30 +960,61 @@ for (i.m in seq_along(model.names)) {
   cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
+cat("check training time..................................\n")
+ls_train_time
+
+#as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+#View(FORECASTS[,,'gb'])
+#dim(FORECASTS[,,'gb'])
+#v2 using a modified version of the old hyper of gb
+#_original version using 1sr hyper of gb
+cat("save each the matrix result from each algorithm using the next line......\n")
+#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_orig.txt')
+#dim(read.table('new_data/results_18feb_v02/gb_orig.txt'))
+#ts.plot(FORECASTS[,,'sgdmodel'][140,])
+
+mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel.txt')
+mx.gb <- read.table('new_data/results_18feb_v02/gb_orig.txt')
+mx.rf <- read.table('new_data/results_18feb_v02/rf.txt')
+mx.AR <- read.table('new_data/results_18feb_v02/AR.txt')
+mx.true <- read.table('new_data/results_18feb_v02/true.txt')
+mx.bench <- read.table('new_data/results_18feb_v02/bench.txt')
+
 #Update FORECASTS with ensembles
 #'sgdmodel',"xgb","AR", "true", "bench"
-model.names <- c('sgdmodel', "gb","AR", "true", "bench",
-                 'ensemble.sgd.gb',
-                 'ensemble.sgd.AR',
-                 'ensemble.sgd.gb.AR')
+model.names <- c('sgdmodel', "gb", "rf", "AR", "true", "bench",
+                 'ensemble.sgd.gb', 'ensemble.sgd.rf', 'ensemble.sgd.AR',
+                 'ensemble.rf.gb','ensemble.rf.AR',
+                 'ensemble.gb.AR',
+                 'ensemble.sgd.gb.AR', 'ensemble.sgd.rf.AR', 'ensemble.sgd.rf.gb.AR')
 M <- length(model.names)
-r_name <- rownames(FORECASTS[,,model.names[1]])
-c_name <- colnames(FORECASTS[,,model.names[1]])
+r_name <- rownames(mx.true)
+c_name <- colnames(mx.true)
 nw.forecasts <- array(NA, dim = c(N, H, M))
-dimnames(nw.forecasts) <- list(r_name, paste("h_", 1:H, sep = ""), model.names)
+dimnames(nw.forecasts) <- list(r_name, c_name, model.names)
 
-nw.forecasts[,, model.names[1]] <- FORECASTS[,,model.names[1]]
-nw.forecasts[,, model.names[2]] <- FORECASTS[,,model.names[2]]
-nw.forecasts[,, model.names[3]] <- FORECASTS[,,model.names[3]]
-nw.forecasts[,, model.names[4]] <- FORECASTS[,,model.names[4]]
-nw.forecasts[,, model.names[5]] <- FORECASTS[,,model.names[5]]
-nw.forecasts[,, model.names[6]] <- (FORECASTS[,,model.names[2]] + FORECASTS[,,model.names[1]])/2
-nw.forecasts[,, model.names[7]] <- (FORECASTS[,,model.names[3]] + FORECASTS[,,model.names[1]])/2
-nw.forecasts[,, model.names[8]] <- (FORECASTS[,,model.names[3]] + FORECASTS[,,model.names[2]]+
-                                      FORECASTS[,,model.names[1]])/3
+nw.forecasts[,, model.names[1]] <- as.matrix(mx.sgdmodel)
+nw.forecasts[,, model.names[2]] <- as.matrix(mx.gb)
+nw.forecasts[,, model.names[3]] <- as.matrix(mx.rf)
+nw.forecasts[,, model.names[4]] <- as.matrix(mx.AR)
+nw.forecasts[,, model.names[5]] <- as.matrix(mx.true)
+nw.forecasts[,, model.names[6]] <- as.matrix(mx.bench)
+nw.forecasts[,, model.names[7]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.gb) )/2
+nw.forecasts[,, model.names[8]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.rf) )/2
+nw.forecasts[,, model.names[9]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.AR) )/2
+nw.forecasts[,, model.names[10]] <- ( as.matrix(mx.rf) + as.matrix(mx.gb) )/2
+nw.forecasts[,, model.names[11]] <- ( as.matrix(mx.rf) + as.matrix(mx.AR) )/2
+nw.forecasts[,, model.names[12]] <- ( as.matrix(mx.gb) + as.matrix(mx.AR) )/2
+nw.forecasts[,, model.names[13]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.gb) + as.matrix(mx.AR) )/3
+nw.forecasts[,, model.names[14]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.rf) + as.matrix(mx.AR) )/3
+nw.forecasts[,, model.names[15]] <- ( as.matrix(mx.sgdmodel) + as.matrix(mx.rf)  + as.matrix(mx.gb) + as.matrix(mx.AR) )/4
 
 FORECASTS <- nw.forecasts
 FFT <- FORECASTS
+
+dim(FORECASTS)
+
+#View(FORECASTS[,,'AR'])
 
 for(i.m in 1:M) FFT[,,i.m]<- FORECASTS[, , "true"]
 RES <- FORECASTS - FFT
@@ -979,6 +1028,9 @@ MAEh <- apply(abs(RES), c(2,3), mean, na.rm = TRUE)
 MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE) 
 MAE
 as.data.frame(MAE) %>% arrange(MAE)
+
+
+cat("finish..........................................................\n")
 
 # plot de errors of MAE
 ts.plot(MAEh[1:200,model.names], col = 1:8, ylab = "MAE")

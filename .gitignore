@@ -3,8 +3,8 @@
 /data_test
 /new_data
 /code/other_test_exe
-*.Rproj.user
-*.Rhistory
-*.RData
-*.Ruserdata
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
 /code/download_dataset.R
