@@ -983,11 +983,11 @@ ls_train_time
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
-#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_5comb.txt')
-#dim(read.table('new_data/results_18feb_v02/gb_5comb.txt'))
+#write.table(FORECASTS[,,'sgdmodel'], 'new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
+#dim(read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt'))
 #ts.plot(FORECASTS[,,'rf'][200,])
 
-mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb.txt')
+mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
 mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb.txt')
 mx.rf <- read.table('new_data/results_18feb_v02/rf_5comb.txt')
 mx.AR <- read.table('new_data/results_18feb_v02/AR.txt')
