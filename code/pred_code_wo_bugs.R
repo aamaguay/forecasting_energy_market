@@ -387,7 +387,7 @@ TMPDATA <- cbind(TMPDATA, (all_dummys[subs, -unlist(list(ncol(all_dummys)))]), m
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
 cat('use only one algorith for each iteration in order to avoid ram problems....\n')
-model.names <- c("gb") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
+model.names <- c("sgdmodel") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
 M <- length(model.names)
 
 # for (i.m in model.names)
@@ -781,13 +781,24 @@ for (i.m in seq_along(model.names)) {
         colSums(filter_test)
         
         set.seed(5)
-        full_lambdas <- c(10,20,30,40) #seq(10,50, 3)
-        samp <- sample(1:length(full_lambdas), 2)
-        lambdas <- full_lambdas[samp]#c(10,20,30,40)
-        alphas <- 1
+        sgdmodel.grid <- base::expand.grid(
+          list(
+            lambdas = seq(0.98,1, 0.01),
+            alphas = seq(20,23,1)
+          ))
+        samp <- sample(1:nrow(sgdmodel.grid), 2)
+        sgdmodelFilter.grid <- sgdmodel.grid[samp,]
+        
+        #full_lambdas <- c(seq(0.1, 1, 0.1),seq(1,50, 1) )#c(10,20,30,40)
+        #samp <- sample(1:length(full_lambdas), 30)
+        #lambdas <- full_lambdas[samp]#c(10,20,30,40)
+        #full_alphas <- c(seq(0.1, 1, 0.1), seq(1,25,1))
+        #samp_ <- sample(1:length(full_alphas), 30)
+        #alphas <- full_alphas[samp_]#1
         #5+"kk"
-        estimate.sgd <- function(id_val, filter_train, filter_valid, alphas, lambdas, ytarget){
-          lambda_val <- lambdas[id_val]
+        estimate.sgd <- function(id_val, filter_train, filter_valid, sgdmodelFilter.grid, ytarget){
+          lambda_val <- sgdmodelFilter.grid[id_val,'lambdas']
+          alphas <- sgdmodelFilter.grid[id_val,'alphas']
           sgd_reg = sgd(x = as.matrix(filter_train %>% select(-ytarget) ),
                         y = filter_train[,ytarget], model = "lm",
                         model.control = list(lambda1 = alphas, lambda2 = lambda_val),
@@ -795,21 +806,23 @@ for (i.m in seq_along(model.names)) {
           sgd_pred_val <- predict(sgd_reg, newdata = as.matrix(filter_valid %>% select(-ytarget) ) )
           rmse_val <- RMSE(as.matrix(filter_valid %>% select(ytarget)), sgd_pred_val)
           #return(c(lambda_val, rmse_val))
-          return(list(lambda = lambda_val,rmse = rmse_val, mod = sgd_reg ))
+          return(list(lambda = lambda_val, alphas = alphas, rmse = rmse_val, mod = sgd_reg ))
         }
 
         #init_time1 <- Sys.time()
-        est.sgd <- mclapply(1:length(lambdas), FUN = function(i) estimate.sgd(i, filter_train, 
-                                                                                filter_valid, alphas,
-                                                                              lambdas, ytarget)) 
+        est.sgd <- mclapply(1:nrow(sgdmodelFilter.grid), FUN = function(i) estimate.sgd(i, filter_train, 
+                                                                                filter_valid, sgdmodelFilter.grid,
+                                                                                ytarget)) 
         #hist(est.sgd[[4]]$mod$coefficients)
         #end_time1 <- Sys.time()
         #print(difftime(init_time1,end_time1))
-
+        #View(cbind(sgdmodelFilter.grid,rmse_vec))
         rmse_vec = c()
-        for (i in 1:length(lambdas)) rmse_vec[i] <- est.sgd[[i]]$rmse
+        #min(rmse_vec)
+        for (i in 1:nrow(sgdmodelFilter.grid)) rmse_vec[i] <- est.sgd[[i]]$rmse
         id_min_rmse <- which.min(rmse_vec)
-        best_lambda <- lambdas[id_min_rmse]
+        best_lambda <- est.sgd[[id_min_rmse]]$lambda
+        best_alpha <- est.sgd[[id_min_rmse]]$alphas
         best_tune_model <- est.sgd[[id_min_rmse]]$mod
         # save results
         #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
