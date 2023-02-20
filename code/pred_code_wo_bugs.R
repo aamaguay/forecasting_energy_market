@@ -387,7 +387,7 @@ TMPDATA <- cbind(TMPDATA, (all_dummys[subs, -unlist(list(ncol(all_dummys)))]), m
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
 cat('use only one algorith for each iteration in order to avoid ram problems....\n')
-model.names <- c("sgdmodel") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
+model.names <- c("gb") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
 M <- length(model.names)
 
 # for (i.m in model.names)
@@ -436,35 +436,65 @@ for (i.m in seq_along(model.names)) {
     #    lambda_l2 = seq(0.01, 0.1, 0.01)
     #  )) #"mse"
     
-    # original version
+    # original version --- good performance
+    #lgb.grid <- base::expand.grid(
+    #  list(
+    #    boosting= c("gbdt","dart"),
+    #    obj = c("regression"),
+    #    metric = c('rmse'),
+    #    num_leaves = seq(20, 27, 1),
+    #    max_depth = seq(7,10,1),
+    #    min_sum_hessian_in_leaf = c(6,7),
+    #    learning_rate = seq(0.18, 0.3, 0.01),
+    #    num_iterations = seq(40, 50, 3),
+    #    lambda_l1 = seq(0.01, 0.1, 0.01),
+    #    lambda_l2 = seq(0.01, 0.1, 0.01)
+    #  ))
+    
+    #modified original version iter(i guess is 3)
+    #lgb.grid <- base::expand.grid(
+    #  list(
+    #    boosting= c("gbdt","dart"),
+    #    obj = c("regression"),
+    #    metric = c('rmse'),
+    #    num_leaves = seq(20, 25, 1),
+    #    max_depth = seq(8,9,1),
+    #    min_sum_hessian_in_leaf = seq(35,39,2),
+    #    learning_rate = seq(0.1, 0.2, 0.03),
+    #    num_iterations = seq(43, 48, 2),
+    #    lambda_l1 = seq(0.01, 0.1, 0.02),
+    #    lambda_l2 = seq(0.01, 0.1, 0.02)
+    #  ))
+    
+    #modified  original version, iter4 (best performance)
     lgb.grid <- base::expand.grid(
       list(
-        boosting= c("gbdt","dart"),
+        boosting= c("gbdt", "dart"),
         obj = c("regression"),
         metric = c('rmse'),
-        num_leaves = seq(20, 27, 1),
-        max_depth = seq(7,10,1),
-        min_sum_hessian_in_leaf = c(6,7),
-        learning_rate = seq(0.18, 0.3, 0.01),
-        num_iterations = seq(40, 50, 3),
-        lambda_l1 = seq(0.01, 0.1, 0.01),
-        lambda_l2 = seq(0.01, 0.1, 0.01)
+        num_leaves = seq(23, 24, 1), #seq(20, 25, 1)
+        max_depth = seq(8,9,1),
+        min_sum_hessian_in_leaf = seq(34,35,1), #seq(35,39,2)
+        learning_rate = seq(0.38, 0.39, 0.01),#seq(0.1, 0.2, 0.03)
+        num_iterations = seq(29, 31, 1), #seq(43, 48, 2)
+        lambda_l1 = c(0.12), #seq(0.11, 0.12, 0.01), #seq(0.01, 0.1, 0.02)
+        lambda_l2 = c(0.08) #seq(0.07, 0.08, 0.01)
       ))
     
     #saved as *_v2
-    lgb.grid <- base::expand.grid(
-      list(
-        boosting= c("gbdt","dart"),
-        obj = c("regression"),
-        metric = c('rmse'),
-        num_leaves = seq(20, 35, 3), 
-        max_depth = seq(6,11,2),
-        min_sum_hessian_in_leaf = seq(5,50,5),
-        learning_rate = seq(0.1, 0.25, 0.02),
-        num_iterations = seq(40, 100, 5),
-        lambda_l1 = seq(0.01, 0.1, 0.01),
-        lambda_l2 = seq(0.01, 0.1, 0.01)
-      ))
+    #lgb.grid <- base::expand.grid(
+    #  list(
+    #    boosting= c("gbdt","dart"),
+    #    obj = c("regression"),
+    #    metric = c('rmse'),
+    #    num_leaves = seq(20, 35, 3), 
+    #    max_depth = seq(6,11,2),
+    #    min_sum_hessian_in_leaf = seq(5,50,5),
+    #    learning_rate = seq(0.1, 0.25, 0.02),
+    #    num_iterations = seq(40, 100, 5),
+    #    lambda_l1 = seq(0.01, 0.1, 0.01),
+    #    lambda_l2 = seq(0.01, 0.1, 0.01)
+    #  ))
     
   }
   #dim(lgb.grid)#96768000
@@ -597,6 +627,7 @@ for (i.m in seq_along(model.names)) {
         filter_test <- DATAtest[, c(features_x)] %>% 
           replace(is.na(.), 0)
         
+        #5+"jj"
         set.seed(11)
         samp <- sample(1:nrow(lgb.grid ), 5)
         lgb.gridFilter <- lgb.grid [samp,]
@@ -615,10 +646,14 @@ for (i.m in seq_along(model.names)) {
           boosting <- as.character(ls_params$boosting)
           metric <- as.character(ls_params$metric)
           ls_params <- within(ls_params, rm(obj, boosting, metric))
+          early_value <- 10
+          if (boosting == 'dart'){
+            early_value <- -1
+          }
           watchlist <- list(validation = lgb.valid)
           lgb_alg <- lgb.train(params = ls_params,obj = obj, boosting = boosting, metric = metric,
                                data = lgb.train, valids = watchlist,
-                               early_stopping_rounds = 70,verbose = 1,
+                               early_stopping_rounds = early_value, verbose = 1,
                                eval_freq = 10, force_col_wise=TRUE,
                                nthread = 6, bagging_fraction = 0.8, feature_fraction = 0.8)
           
@@ -635,6 +670,12 @@ for (i.m in seq_along(model.names)) {
         #last_time <- Sys.time()
         #diff_mode_iter <- difftime(recent_time,last_time)
         #View(cbind(lgb.gridFilter,rmse_vec))
+        #ts.plot(head(filter_train[,ytarget], 50 ))
+        #lines(predict(best_tune_model, as.matrix(head(filter_train[,features_x], 50) )),col='red') 
+        #ts.plot(DATAtest[,ytarget])
+        #lines(predict(best_tune_model,as.matrix(filter_test)),col='red')
+        #min(rmse_vec) #2965.907 ,1744.536 , 1668.944, #2959.842 , 2953, 2904.337, 2871.571 , 2858.706, 2899.405, 2885.954, 2871.17, 2855.269
+        
         rmse_vec = c()
         for (i in 1:nrow(lgb.gridFilter)) rmse_vec[i] <- est.lgb[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
@@ -921,7 +962,7 @@ for (i.m in seq_along(model.names)) {
                           max.P = om, max.Q = om,
                           seasonal = TRUE, ic = "aic" )
         
-        pred <- matrix(, length(seqid), H)
+        pred <- matrix(NA, length(seqid), H)
         for (i.NN in 1:length(seqid)) pred[i.NN, ] <- predict(mod, newdata = DATAwow[yn + (-mod$order + 1):0 + (i.NN - 1) * S], n.ahead = H)$pred
       }
       if (mname == "hw") {
@@ -974,6 +1015,7 @@ for (i.m in seq_along(model.names)) {
   cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
+
 cat("check training time..................................\n")
 ls_train_time
 
@@ -983,12 +1025,12 @@ ls_train_time
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
-#write.table(FORECASTS[,,'sgdmodel'], 'new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
-#dim(read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt'))
+#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt')
+#dim(read.table('new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt'))
 #ts.plot(FORECASTS[,,'rf'][200,])
 
 mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
-mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb.txt')
+mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt')#gb_5comb_originalHyper_iter2.txt (good performance this iter2)-- gb_5comb_modifiOriginalHyper_iter3.txt (2nd option) -- gb_5comb_modifiOriginalHyper_iter4(best performance)
 mx.rf <- read.table('new_data/results_18feb_v02/rf_5comb.txt')
 mx.AR <- read.table('new_data/results_18feb_v02/AR.txt')
 mx.true <- read.table('new_data/results_18feb_v02/true.txt')
@@ -1047,30 +1089,36 @@ as.data.frame(MAE) %>% arrange(MAE)
 
 cat("finish..........................................................\n")
 
-# plot de errors of MAE
-ts.plot(MAEh[1:200,model.names], col = 1:8, ylab = "MAE")
+# plot de errors of MAE c('AR', 'RF','sgdmodel')
+ts.plot(MAEh[1:200, model.names ], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
 abline(v = 0:10 * S - 8, col = "steelblue")
 
+
 # error verification post prediction
-ts.plot(as.vector(FORECASTS[,,'xgb'])[1:(24*100)],col='red')
-lines(as.vector(FORECASTS[,,'true'])[1:(24*100)],col='blue')
-lines(as.vector(FORECASTS[,,'AR'])[1:(24*100)],col='green')
+ts.plot(as.vector(FORECASTS[,,'rf'])[1:(24*12)],col='red')
+lines(as.vector(FORECASTS[,,'true'])[1:(24*19)],col='black')
+lines(as.vector(FORECASTS[,,'AR'])[1:(24*19)],col='green')
+lines(as.vector(FORECASTS[,,'sgdmodel'])[1:(24*19)],col='brown')
 
 ts.plot(as.vector(FORECASTS[,,'sgdmodel'])[1:(24*1000)],col='red')
 #lines(as.vector(FORECASTS[,,'bench'])[1:(24*30)],col='pink')
 lines(as.vector(FORECASTS[,,'true'])[1:(24*1000)],col='blue')
 #lines(as.vector(FORECASTS[,,'AR'])[1:(24*10)],col='green')
-lines(as.vector(FORECASTS[,,'xgb'])[1:(24*1000)],col='yellow')
+lines(as.vector(FORECASTS[,,'gb'])[1:(24*1000)],col='yellow')
 
-ts.plot(as.vector(FORECASTS[200,,'sgdmodel']),col='red')
-lines(as.vector(FORECASTS[200,,'true']),col='blue')
-lines(as.vector(FORECASTS[200,,'xgb']),col='green')
-lines(as.vector(FORECASTS[200,,'AR']),col='orange')
+ts.plot(FORECASTS[,,'sgdmodel'][50,],col='red')
+lines(FORECASTS[,,'true'][50,],col='black')
+lines(FORECASTS[,,'rf'][50,],col='yellow')
+lines(FORECASTS[,,'gb'][50,],col='green')
+
+ts.plot(as.vector(FORECASTS[400,,'sgdmodel']),col='red')
+lines(as.vector(FORECASTS[400,,'true']),col='black')
+lines(as.vector(FORECASTS[400,,'gb']),col='green')
+lines(as.vector(FORECASTS[400,,'rf']),col='blue')
 
 View(FORECASTS[,,'sgdmodel'])
 View(FORECASTS[1:(20*4),,'xgb'])
 View(FORECASTS[1:(20*4),,'true'])
-#2021-09-08
 
