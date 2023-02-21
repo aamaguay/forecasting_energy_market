@@ -20,6 +20,7 @@ library(Matrix)
 library(splines)
 
 #####
+library(EnvCpt)
 library(prophet)
 library(glmnet)
 library(lightgbm)
@@ -90,11 +91,10 @@ MET[[country]] <- ds_met
 cat('na in met dataset*******************************************************\n')
 colSums(is.na(ds_met))
 
-ds_met %>% 
+ds_met %>%
   arrange(desc(timetoforecast_utc)) %>% 
-  select(timetoforecast_utc) %>% 
+  dplyr::select(timetoforecast_utc) %>% 
   tail(1)
-
 
 cat('prepare edat dataset*******************************************************\n')
 EDAT<- list()
@@ -113,12 +113,12 @@ EDAT[[country]] <- ds_edat
 
 ds_edat %>% 
   arrange(desc(DateTime)) %>% 
-  select(DateTime) %>% 
+  dplyr::select(DateTime) %>% 
   head(2)
 
 # plot to show nan values of the last days
 plot(tail(ds_edat$DateTime,100),
-     tail(ds_edat$NL_Load_Actual,100),
+     tail(ds_edat[,yt_name],100),
      type = "l",
      col = 'red',
      xlab = "Year",
@@ -203,8 +203,115 @@ DATA$is_day_end <- ifelse((DATA$HoD%in% seq(18,23) ), 1, 0)
 
 #ts.plot(DATA$weekend)
 #plot of seasonal patterns
-mmzz <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
-plot(head(mmzz$DateTime,16+(24*1)),head(mmzz$NL_Load_Actual,16+(24*1)),type='l')
+ds_unique <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
+plot(head(ds_unique$DateTime,16+(24*1)),head(ds_unique[,yt_name],16+(24*1)),type='l')
+
+cat('decomposition of target variable*****************************************\n')
+min_date_vec <- c(lubridate::year(min(DATA$DateTime)),lubridate::month(min(DATA$DateTime)),
+                  lubridate::day(min(DATA$DateTime)), lubridate::hour(min(DATA$DateTime)),
+                  lubridate::minute(min(DATA$DateTime)), lubridate::second(min(DATA$DateTime))
+                  )
+yts <- ts(ds_unique[,yt_name][1:(24*30*3)], frequency = 24 ,start = 0)
+plot( decompose(yts) )
+
+
+cat('control by changes on trends or means****************************************\n')
+future <- DATA[,yt_name]
+total_nrow <- length(DATA[,yt_name])
+n_per_chunk <- (24*30)
+n_chunk <- ceiling(total_nrow/n_per_chunk)
+list_sequence <- list()
+for (i in 0:(n_chunk-1)){
+  lower_ind <- ((i*n_per_chunk)+1)
+  upper_ind <- ((i+1)*n_per_chunk)
+  values_future <- (future[c(lower_ind:upper_ind)])
+  values_future <- values_future[!is.na(values_future)]
+  list_sequence[[i+1]] <- values_future
+}
+
+est.trend.mean.changes <- function(i, list_sequence, vec_changes){
+  var <- list_sequence[[i]]
+  type_change <- vec_changes
+  fit_envcpt = envcpt(var,models=type_change,minseglen=5)
+  return(list(type_change = fit_envcpt))
+}
+vec_changes <- "trendcpt"
+res <- mclapply(1:length(list_sequence), FUN = function(i) est.trend.mean.changes(i,list_sequence, vec_changes ))
+for (i in 1:length(list_sequence)) res[[i]] <- unlist((res[[i]]$type_change$trendcpt@cpts)+(n_per_chunk*(i-1)) )
+DATA$chgTrend <- ifelse(as.integer(rownames(DATA)) %in% unlist(res), 1, 0)
+
+#ts.plot(DATA[,yt_name][1:300])
+#abline(v=unlist(ls_trend_chpoints), col='green')
+#length(unlist(ls_trend_chpoints))
+#ts.plot(DATA$chgTrend[1:300])
+
+
+cat('create trend variable in FULL dataset*************************************\n')
+ds_unique$Trend <- 1:nrow(ds_unique)
+DATA <- merge(DATA, ds_unique %>% dplyr::select(DateTime,Trend), by = 'DateTime')
+
+
+cat('interaction between holidays and DoY***************************************\n')
+#interaction day Of year by holidays
+holidays <- read_csv("data_22dec_2022/holidays_2000_2030.csv")
+holidays <- holidays %>% filter(CountryCode == zone) %>%
+  filter(as.Date.character(Date)>= format(as.Date(min(DATA$DateTime),format="%Y-%m-%d"),"%Y-%m-%d") &
+           as.Date.character(Date)<= format(as.Date(max(DATA$DateTime),format="%Y-%m-%d"),"%Y-%m-%d")) 
+
+ts.plot(ds_unique %>% filter(
+  format(as.Date((ds_unique$DateTime),format="%Y-%m-%d"),"%Y-%m-%d") >= as.Date.character("2022-04-26") &
+    format(as.Date((ds_unique$DateTime),format="%Y-%m-%d"),"%Y-%m-%d") <= as.Date.character("2022-04-30")
+  ) %>% dplyr::select(yt_name))
+
+
+estimate.DHL.range <- function(DATA, holidays, S = 24, dayahead = 1.5, daybefore = 0.5){
+  DHL_ <- array(0, dim=c(nrow(DATA), 1 ) )
+  xtime <- DATA$DateTime
+  holidays$Name <- paste(gsub(" ", "", holidays$Name), as.character(lubridate::year(holidays$Date)), sep ='_')
+  holidays$Name <- as.factor(holidays$Name)
+  holnames <- levels(holidays$Name)
+  hldN <- length(holnames)
+  cat(holnames,'..\n')
+  S <- S
+  dayahead <- dayahead
+  daybefore <- daybefore
+  for(i.hld in 1:hldN){
+    main_date <- ymd_hms( paste(holidays$Date[ holidays$Name == holnames[i.hld] ], '00:00:00'), tz="UTC" ) 
+    main_date <- as.POSIXct(main_date)
+    lim_superior <- ymd_hms( (main_date) + (3600 * (S*dayahead)) , tz= 'UTC')
+    lim_inferior <- ymd_hms( (main_date) - (3600 * (S*daybefore)) , tz= 'UTC')
+    id_set <- which((as.Date.character(lim_inferior) <= xtime & as.Date.character(lim_superior) >= xtime))
+    DHL_[id_set,] <- 1
+  }
+  return(DHL_)
+}
+
+DHL_ <- estimate.DHL.range(DATA, holidays, S = 24, dayahead = 1.5, daybefore = 0.5 )
+DHL_ <- as.matrix(setNames(DHL_ %>% as.data.frame(), c('holidays_dummy')) )
+DATA <- cbind(DATA,DHL_)
+
+#dfDoY <- as.data.frame(base::as.factor(DATA$DoY))
+#names(dfDoY) <- c("DoY")
+#MDoY <- as.matrix(sparse.model.matrix(~.-1, 
+#                                      data = setNames(as.data.frame(base::as.factor(DATA$DoY)),
+#                                                      c('DoY'))   ))
+# estimate interactions WoY and holidays
+MWoY <- as.matrix(sparse.model.matrix(~.-1, 
+                                      data = setNames(as.data.frame(base::as.factor(DATA$WoY)),
+                                                      c('WoY'))   ))
+
+estimate.vector.WoY.Holidays <- function(i, dummy_holidays, all_dummys){
+  result <- (dummy_holidays[,1]*all_dummys[,colnames(all_dummys)[i]])
+  return(result)
+}
+
+#estimate interactions -- est.result.holidays.DoY
+mx.result.tibble.holidays.WoY <- lapply(1:length(colnames(MWoY)), FUN = function(i) estimate.vector.WoY.Holidays(i, DHL_, MWoY ) )
+mx.result.tibble.holidays.WoY <- do.call(cbind, mx.result.tibble.holidays.WoY)
+colnames(mx.result.tibble.holidays.WoY) <- paste(colnames(MWoY),'holidays', sep = '.')
+mx.result.tibble.holidays.WoY <- as.tibble(mx.result.tibble.holidays.WoY[,colSums(mx.result.tibble.holidays.WoY)>0])
+#dim(mx.result.tibble.holidays.WoY)
+#colSums(mx.result.tibble.holidays.WoY)
 
 cat('na in FULL dataset*******************************************************\n')
 colSums(is.na(DATA))
@@ -212,11 +319,34 @@ colSums(is.na(DATA))
 # drop because they have a lot of missing values: R602 TN TX TX
 # include: "TTT", "Rad1h", "Neff", RR1c", "FF", "FX1"
 cat('correlation plot of DATA ********************************************************\n')
+source('code/functions_d2c.R')
 simple_corr_matrix_plot(DATA %>% 
                           select_if(is.numeric), 
                         0.8 ,0.9 , 'corr using spearman',
                         colnames(DATA %>% 
                                    select_if(is.numeric)),"spearman" )
+
+#ts.plot(FDATA$holidays_dummy)
+#lines(FDATA$DoY92.holidays, col='red')
+#sum(FDATA$DoY92.holidays)
+#summary(lm( formula = formula_str, data = FDATA %>% select_if(is.numeric) ))
+#par(mfrow=c(3,1), mar=c(4,5,3,1))
+#plot(ts(FDATA$NL_Load_Actual), 
+#     plot.type="single", col = c("blue"), type= "o" , lwd=.5,main="1", ylab="Miles",
+#     cex.lab=5, xlab = '', xaxt='n')
+#grid()
+#plot(ts(FDATA$holidays_dummy), 
+#     plot.type="single", col = c("red"), type= "o" , lwd=.5,main="2", ylab="Miles",
+#     cex.lab=5, xlab = '', xaxt='n')
+#plot(ts(FDATA$DoY92.holidays), 
+#     plot.type="single", col = c("orange"), type= "o" , lwd=.5,main="2", ylab="Miles",
+#     cex.lab=5, xlab = '', xaxt='n')
+
+#ts.plot(FDATA$DoY)
+#abline(c(100))
+#View(FDATA %>% filter(DoY==92) %>% 
+#       dplyr::select(DateTime,DoY,holidays_dummy))
+#lubridate::week("2021-04-02")
 
 
 # Define train and test horizon
@@ -235,16 +365,16 @@ for (i.hm in 1:N) {
 }
 
 # verify length of each subset
-mm <- list()
-for (i.hm in 1:N) mm[[i.hm]] <- length(IDTEST[[i.hm]])
-for (v in IDTEST){
-  cat(length(v),'\n')
-}
+#mm <- list()
+#for (i.hm in 1:N) mm[[i.hm]] <- length(IDTEST[[i.hm]])
+#for (v in IDTEST){
+#  cat(length(v),'\n')
+#}
 
 cat("holidays preparation********************************\n")
 holidays <- read_csv("data_22dec_2022/holidays_2000_2030.csv")
 holidays$Name[] <- gsub(" ", "", holidays$Name)
-get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
+get.HLD <- function(DATA, holidays, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
   xtime <- DATA$DateTime
   # zone only supports full countries at the moment 
   # deg is, cubic spline degree
@@ -293,7 +423,7 @@ get.HLD<- function(xtime, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
   DHL 
 }
 
-tmp <- get.HLD(DATA$DateTime, zone=country)
+tmp <- get.HLD(DATA, holidays, zone=country)
 
 # bind DATA with holidays
 DATA <- cbind(DATA, tmp)
@@ -319,31 +449,41 @@ TMPDATA <- bind_cols(DateTime = DATA$DateTime[subs],
                               summer = DATA$SummerTime[subs], 
                               clag = LAGS) )
 
-dff <- as.data.frame(base::as.factor(DATA$HoD))
-names(dff) <- c("HoD")
-MHoW <- as.matrix(sparse.model.matrix(~.-1, data = dff))
+MHoD <- as.matrix(sparse.model.matrix(~.-1, 
+                                      data = setNames(as.data.frame(base::as.factor(DATA$HoD)),
+                                                      c('HoD')) ))
 
-dfDoW <- as.data.frame(base::as.factor(DATA$DoW))
-names(dfDoW) <- c("DoW")
-MDoW <- as.matrix(sparse.model.matrix(~.-1,data = dfDoW))
+#dfDoW <- as.data.frame(base::as.factor(DATA$DoW))
+#names(dfDoW) <- c("DoW")
+MDoW <- as.matrix(sparse.model.matrix(~.-1,
+                                      data = setNames(as.data.frame(base::as.factor(DATA$DoW)),
+                                                      c('DoW')) ))
 
-dfMoY <- as.data.frame(base::as.factor(DATA$MoY))
-names(dfMoY) <- c("MoY")
-MMoY <- as.matrix(sparse.model.matrix(~.-1,data = dfMoY))
+#dfMoY <- as.data.frame(base::as.factor(DATA$MoY))
+#names(dfMoY) <- c("MoY")
+MMoY <- as.matrix(sparse.model.matrix(~.-1,
+                                      data = setNames(as.data.frame(base::as.factor(DATA$MoY )),
+                                                      c('MoY'))  ))
 
-dfQoY <- as.data.frame(base::as.factor(DATA$QoY))
-names(dfQoY) <- c("QoY")
-MQoY <- as.matrix(sparse.model.matrix(~.-1,data = dfQoY))
+#dfQoY <- as.data.frame(base::as.factor(DATA$QoY))
+#names(dfQoY) <- c("QoY")
+MQoY <- as.matrix(sparse.model.matrix(~.-1,
+                                      data = setNames(as.data.frame(base::as.factor(DATA$MoY )),
+                                                      c('QoY'))  ))
 
-weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
-colnames(weekend_mx) <- c("weekend")
-all_dummys <- as_tibble(cbind(MHoW, MDoW, MMoY,MQoY, weekend_mx ))
+#weekend_mx <- matrix(DATA$weekend, nrow = nrow(DATA), ncol = 1 )
+#colnames(weekend_mx) <- c("weekend")
+
+all_dummys <- as_tibble(cbind(MHoD, MDoW, MMoY, MQoY, MWoY,
+                              as.matrix(setNames(DATA %>% dplyr::select(weekend), c('weekend'))) ))
 
 cat("interaction features****************************************************\n")
-paste_hod <- paste("HoD",0:22, sep="")
-paste_dow <- paste("DoW",1:6, sep="")
-paste_moy <- paste("MoY",1:11, sep="")
-paste_qoy <- paste("QoY",1:3, sep="")
+paste_hod <- paste("HoD",0:23, sep="")
+paste_dow <- paste("DoW",1:7, sep="")
+paste_moy <- paste("MoY",1:12, sep="")
+paste_qoy <- paste("QoY",1:4, sep="")
+paste_woy <- paste("WoY",1:53, sep="")
+paste_interaction_holidays_WoY <- colnames(mx.result.tibble.holidays.WoY)
 paste_seasonality <- as.vector( sapply(c("HoD","DoW", "MoY", "DoY", "WoY", "DoM", "QoY"), 
                                        function(x) c(paste(x,'_sin',sep = ''), paste(x,'_cos',sep = '')   )) )
 
@@ -367,22 +507,29 @@ estimate.vector <- function(i, ls_ds_interaction, all_dummys){
   result <- (all_dummys[,ls_ds_interaction[[i]][1]]*all_dummys[,ls_ds_interaction[[i]][2]])
   return(result)
 }
-est.result <- lapply(1:length(ls_ds_interaction), FUN = function(i) estimate.vector(i, ls_ds_interaction, all_dummys ) )
-mx.result.tibble <- do.call(cbind, est.result)
+#est.result <- lapply(1:length(ls_ds_interaction), FUN = function(i) estimate.vector(i, ls_ds_interaction, all_dummys ) )
+mx.result.tibble <- do.call(cbind, 
+                            lapply(1:length(ls_ds_interaction),
+                                   FUN = function(i) estimate.vector(i, ls_ds_interaction, all_dummys ) ) )
 colnames(mx.result.tibble) <- unlist(ls_ds_interaction_pt)
 mx.result.tibble <- as.tibble(mx.result.tibble)
+mx.result.tibble <- mx.result.tibble[,(colSums(mx.result.tibble) >0)] #620----585, 759---710
 
 cat("finish interaction features**************************************************\n")
 
 #define features to use
 features_holidays <- colnames(tmp)
-features_interaction <- unlist(ls_ds_interaction_pt)
-features_x <- c(paste_hod, paste_dow, paste_moy,
-                paste_qoy, paste("x_lag_",S * c(1:14, 21, 28), sep=""),
-                paste_seasonality, features_interaction, features_holidays,
-                'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF")
+features_interaction <- colnames(mx.result.tibble)
+features_x <- c(paste_hod[-1], paste_dow[-1], paste_moy[-7],
+                paste_qoy[-1], paste_woy[-40],
+                paste("x_lag_",S * c(1:14, 21, 28), sep=""),
+                paste_seasonality, features_interaction,
+                paste_interaction_holidays_WoY, features_holidays,
+                'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF",
+                "Trend", "holidays_dummy")
 
 TMPDATA <- cbind(TMPDATA, (all_dummys[subs, -unlist(list(ncol(all_dummys)))]), mx.result.tibble[subs,])
+TMPDATA <- cbind(TMPDATA, mx.result.tibble.holidays.WoY[subs,])
 
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
@@ -530,15 +677,17 @@ for (i.m in seq_along(model.names)) {
     # define formula for gb and rf
     formula_str <- paste(
       paste( ytarget,' ~ ',sep = ''), 
-      paste( paste_dow, collapse=' + '),' + ',
-      paste( paste_moy, collapse=' + '),' + ',
-      paste( paste_hod, collapse=' + '),' + ',
-      paste( paste_qoy, collapse=' + '),' + ',
+      paste( paste_dow[-1], collapse=' + '),' + ',
+      paste( paste_moy[-7], collapse=' + '),' + ',
+      paste( paste_hod[-1], collapse=' + '),' + ',
+      paste( paste_qoy[-1], collapse=' + '),' + ',
+      paste( paste_woy[-40], collapse=' + '),' + ',
+      paste( paste_interaction_holidays_WoY, collapse=' + '),' + ',
       paste( features_holidays, collapse=' + '),' + ',
       paste( paste_seasonality, collapse=' + '),' + ',
       paste( features_interaction, collapse=' + '),' + ',
       paste( paste("x_lag_",S * c(1:14, 21, 28), sep = '', collapse=' + '),
-             '+ weekend + SummerTime + is_day_start + is_day_end + TTT + FF'),sep = '')
+             '+ weekend + SummerTime + is_day_start + is_day_end + TTT + FF + Trend + holidays_dummy'),sep = '')
     
   } else {
     FDATA <- DATA 
@@ -634,9 +783,9 @@ for (i.m in seq_along(model.names)) {
         # create datasets
         lgb.test <- lgb.Dataset(data = as.matrix(filter_test),
                                 label = DATAtest[,ytarget] )
-        lgb.train <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% head(nrow(filter_train)-20) ),
+        lgb.train <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% head(nrow(filter_train)-20) ),
                                  label = head(filter_train[,ytarget], nrow(filter_train)-20) )
-        lgb.valid <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% tail(20) ),
+        lgb.valid <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% tail(20) ),
                                  label = head(filter_train[,ytarget], tail(20) ) )
         
         #6+"jjj"
@@ -720,9 +869,9 @@ for (i.m in seq_along(model.names)) {
         # create datasets
         rf.test <- lgb.Dataset(data = as.matrix(filter_test),
                                 label = DATAtest[,ytarget] )
-        rf.train <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% head(nrow(filter_train)-20) ),
+        rf.train <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% head(nrow(filter_train)-20) ),
                                  label = head(filter_train[,ytarget], nrow(filter_train)-20) )
-        rf.valid <- lgb.Dataset(data = as.matrix(filter_train %>% select(-ytarget) %>% tail(20) ),
+        rf.valid <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% tail(20) ),
                                  label = head(filter_train[,ytarget], tail(20) ) )
         
         #6+"jjj"
@@ -840,12 +989,12 @@ for (i.m in seq_along(model.names)) {
         estimate.sgd <- function(id_val, filter_train, filter_valid, sgdmodelFilter.grid, ytarget){
           lambda_val <- sgdmodelFilter.grid[id_val,'lambdas']
           alphas <- sgdmodelFilter.grid[id_val,'alphas']
-          sgd_reg = sgd(x = as.matrix(filter_train %>% select(-ytarget) ),
+          sgd_reg = sgd(x = as.matrix(filter_train %>% dplyr::select(-ytarget) ),
                         y = filter_train[,ytarget], model = "lm",
                         model.control = list(lambda1 = alphas, lambda2 = lambda_val),
                         sgd.control = list(method = 'ai-sgd'))
-          sgd_pred_val <- predict(sgd_reg, newdata = as.matrix(filter_valid %>% select(-ytarget) ) )
-          rmse_val <- RMSE(as.matrix(filter_valid %>% select(ytarget)), sgd_pred_val)
+          sgd_pred_val <- predict(sgd_reg, newdata = as.matrix(filter_valid %>% dplyr::select(-ytarget) ) )
+          rmse_val <- RMSE(as.matrix(filter_valid %>% dplyr::select(ytarget)), sgd_pred_val)
           #return(c(lambda_val, rmse_val))
           return(list(lambda = lambda_val, alphas = alphas, rmse = rmse_val, mod = sgd_reg ))
         }
@@ -870,7 +1019,7 @@ for (i.m in seq_along(model.names)) {
         #sgd_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec))
         #predict(best_tune_model, newdata = test_sparse)
         
-        test_sparse  = Matrix(as.matrix(filter_test %>% select(-ytarget)), sparse=TRUE)
+        test_sparse  = Matrix(as.matrix(filter_test %>% dplyr::select(-ytarget)), sparse=TRUE)
         pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
         #View(pred)
@@ -1019,19 +1168,28 @@ for (i.m in seq_along(model.names)) {
 cat("check training time..................................\n")
 ls_train_time
 
-#as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
 #View(FORECASTS[,,'gb'])
 #dim(FORECASTS[,,'gb'])
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
-#write.table(FORECASTS[,,'gb'], 'new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt')
-#dim(read.table('new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt'))
+#write.table(FORECASTS[,,'gb'], 'new_data/results_21feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
+#dim(read.table('new_data/results_21feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt'))
 #ts.plot(FORECASTS[,,'rf'][200,])
 
-mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
-mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt')#gb_5comb_originalHyper_iter2.txt (good performance this iter2)-- gb_5comb_modifiOriginalHyper_iter3.txt (2nd option) -- gb_5comb_modifiOriginalHyper_iter4(best performance)
-mx.rf <- read.table('new_data/results_18feb_v02/rf_5comb.txt')
+mx.sgdmodel <- read.table('new_data/results_21feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
+#mx.sgdmodel <- read.table('new_data/results_21feb_v02/sgdmodel_5comb_includNewFeatures_iter1.txt')
+#mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
+mx.gb <- read.table('new_data/results_21feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
+#mx.gb <- read.table('new_data/results_21feb_v01/gb_5comb_modifiOriginalHyper_includNewFeatures_iter1.txt')
+#mx.gb <- read.table('new_data/results_18feb_v02/gb_5comb_modifiOriginalHyper_iter4.txt')
+#gb_5comb_originalHyper_iter2.txt (good performance this iter2)--
+#gb_5comb_modifiOriginalHyper_iter3.txt (2nd option) -- 
+# gb_5comb_modifiOriginalHyper_iter4(best performance)
+mx.rf <- read.table('new_data/results_21feb_v02/rf_5comb_includNewFeatures_WoY_iter1.txt')
+#mx.rf <- read.table('new_data/results_21feb_v01/rf_5comb_includNewFeatures_iter1.txt')
+#mx.rf <- read.table('new_data/results_18feb_v02/rf_5comb.txt')
 mx.AR <- read.table('new_data/results_18feb_v02/AR.txt')
 mx.true <- read.table('new_data/results_18feb_v02/true.txt')
 mx.bench <- read.table('new_data/results_18feb_v02/bench.txt')
@@ -1080,11 +1238,12 @@ RMSE <- sqrt(apply(abs(RES)^2, c(3), mean, na.rm = TRUE))
 RMSE
 as.data.frame(RMSE) %>% arrange(RMSE)
 
-
 MAEh <- apply(abs(RES), c(2,3), mean, na.rm = TRUE) 
 MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE) 
 MAE
 as.data.frame(MAE) %>% arrange(MAE)
+
+#lgb.importance(best_tune_model)
 
 
 cat("finish..........................................................\n")
@@ -1108,15 +1267,25 @@ lines(as.vector(FORECASTS[,,'true'])[1:(24*1000)],col='blue')
 #lines(as.vector(FORECASTS[,,'AR'])[1:(24*10)],col='green')
 lines(as.vector(FORECASTS[,,'gb'])[1:(24*1000)],col='yellow')
 
-ts.plot(FORECASTS[,,'sgdmodel'][50,],col='red')
-lines(FORECASTS[,,'true'][50,],col='black')
-lines(FORECASTS[,,'rf'][50,],col='yellow')
-lines(FORECASTS[,,'gb'][50,],col='green')
+View(holidays)
+View(FORECASTS[,,'true'])
+str_date <- '2021-05-12'
+ts.plot(FORECASTS[,,'true'][str_date,],col='black')
 
-ts.plot(as.vector(FORECASTS[400,,'sgdmodel']),col='red')
-lines(as.vector(FORECASTS[400,,'true']),col='black')
-lines(as.vector(FORECASTS[400,,'gb']),col='green')
-lines(as.vector(FORECASTS[400,,'rf']),col='blue')
+ts.plot(FORECASTS[,,'sgdmodel'][str_date,],col='red')
+lines(FORECASTS[,,'ensemble.sgd.rf.AR'][str_date,],col='brown')
+lines(FORECASTS[,,'true'][str_date,],col='black')
+lines(FORECASTS[,,'AR'][str_date,],col='purple')
+lines(FORECASTS[,,'rf'][str_date,],col='blue')
+lines(FORECASTS[,,'gb'][str_date,],col='green')
+legend("topleft", c('true','sgdmodel','gb','rf'),
+       col = c('black','red','green','blue'), lwd = 1)
+
+ts.plot(as.vector(FORECASTS[300,,'sgdmodel']),col='red')
+lines(as.vector(FORECASTS[300,,'true']),col='black')
+lines(as.vector(FORECASTS[300,,'gb']),col='green')
+lines(as.vector(FORECASTS[300,,'rf']),col='blue')
+lines(as.vector(FORECASTS[300,,'AR']),col='orange')
 
 View(FORECASTS[,,'sgdmodel'])
 View(FORECASTS[1:(20*4),,'xgb'])

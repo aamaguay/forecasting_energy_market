@@ -226,7 +226,7 @@ simple_corr_matrix_plot <- function(df ,label_size, size_coef, title_graph, coln
            addCoef.col = "black",
            diag = FALSE,
            title = title_graph, outline=FALSE, cl.pos="b",
-           number.digits=2, mar=c(0,0,1,0))
+           number.digits=1, mar=c(0,0,0,0))
 }
 
 # plot with new colors
