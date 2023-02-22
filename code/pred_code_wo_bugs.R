@@ -72,7 +72,7 @@ log_midpipe <- function(x, ...) {
 #region
 # %% Get DWD Data
 # "BE", "NL", "LU"
-country <- "NL"
+country <- "LU"
 ZONE <- c(country) 
 i.z <- 1 # later in loop
 zone <- ZONE[i.z]
@@ -249,7 +249,7 @@ DATA$chgTrend <- ifelse(as.integer(rownames(DATA)) %in% unlist(res), 1, 0)
 cat('create trend variable in FULL dataset*************************************\n')
 ds_unique$Trend <- 1:nrow(ds_unique)
 DATA <- merge(DATA, ds_unique %>% dplyr::select(DateTime,Trend), by = 'DateTime')
-
+DATA$chgTrendByTrend <- DATA$chgTrend*DATA$Trend
 
 cat('interaction between holidays and DoY***************************************\n')
 #interaction day Of year by holidays
@@ -526,7 +526,7 @@ features_x <- c(paste_hod[-1], paste_dow[-1], paste_moy[-7],
                 paste_seasonality, features_interaction,
                 paste_interaction_holidays_WoY, features_holidays,
                 'weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF",
-                "Trend", "holidays_dummy")
+                "Trend", "holidays_dummy") #"chgTrendByTrend", "chgTrend"
 
 TMPDATA <- cbind(TMPDATA, (all_dummys[subs, -unlist(list(ncol(all_dummys)))]), mx.result.tibble[subs,])
 TMPDATA <- cbind(TMPDATA, mx.result.tibble.holidays.WoY[subs,])
@@ -534,7 +534,7 @@ TMPDATA <- cbind(TMPDATA, mx.result.tibble.holidays.WoY[subs,])
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
 cat('use only one algorith for each iteration in order to avoid ram problems....\n')
-model.names <- c("gb") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
+model.names <- c("rf") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
 M <- length(model.names)
 
 # for (i.m in model.names)
@@ -726,6 +726,7 @@ for (i.m in seq_along(model.names)) {
       #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1],])
       # View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
       DATAtrain <- FDATA[idt, ]
+      #View(DATAtrain)
       
       idtestl <- list()
       for (i.hm in seqid) {
@@ -770,7 +771,8 @@ for (i.m in seq_along(model.names)) {
         pred <- t(matrix(predict(mod, newdata = DATAtest), nrow = length(HORIZON[[i.hl]]), byrow = TRUE))
       } # GAM
       if (mname == "gb") {
-        
+        #View(DATAtrain)
+      
         filter_train <- DATAtrain[, c(ytarget, features_x)] %>% 
           replace(is.na(.), 0)
         filter_test <- DATAtest[, c(features_x)] %>% 
@@ -1164,7 +1166,6 @@ for (i.m in seq_along(model.names)) {
   cat('....******* process for the model:', mname, 'finished****.......\n\n',sep = ' ')
 } # i.m
 
-
 cat("check training time..................................\n")
 ls_train_time
 
@@ -1174,10 +1175,38 @@ as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
+##NL
 #write.table(FORECASTS[,,'gb'], 'new_data/results_21feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
-#dim(read.table('new_data/results_21feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt'))
+##BE
+#write.table(FORECASTS[,,'sgdmodel'], 'new_data/BE_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
+#write.table(FORECASTS[,,'bench'], 'new_data/BE_results/results_22feb_v02/bench_iter1.txt')
+#dim(read.table('new_data/BE_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt'))
 #ts.plot(FORECASTS[,,'rf'][200,])
 
+##LU
+#write.table(FORECASTS[,,'sgdmodel'], 'new_data/LU_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
+#write.table(FORECASTS[,,'rf'], 'new_data/LU_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter2.txt')
+#write.table(FORECASTS[,,'AR'], 'new_data/LU_results/results_22feb_v02/AR_iter1.txt')
+
+#BE
+mx.sgdmodel <- read.table('new_data/BE_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
+mx.gb <- read.table('new_data/BE_results/results_22feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
+mx.rf <- read.table('new_data/BE_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter1.txt')
+mx.AR <- read.table('new_data/BE_results/results_22feb_v02/AR_iter1.txt')
+mx.true <- read.table('new_data/BE_results/results_22feb_v02/true_iter1.txt')
+mx.bench <- read.table('new_data/BE_results/results_22feb_v02/bench_iter1.txt')
+
+#LU
+mx.sgdmodel <- read.table('new_data/LU_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
+mx.gb <- read.table('new_data/LU_results/results_22feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
+mx.rf <- read.table('new_data/LU_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter1.txt')
+mx.AR <- read.table('new_data/LU_results/results_22feb_v02/AR_iter1.txt')
+mx.true <- read.table('new_data/LU_results/results_22feb_v02/true_iter1.txt')
+mx.bench <- read.table('new_data/LU_results/results_22feb_v02/bench_iter1.txt')
+
+  
+
+####NL
 mx.sgdmodel <- read.table('new_data/results_21feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
 #mx.sgdmodel <- read.table('new_data/results_21feb_v02/sgdmodel_5comb_includNewFeatures_iter1.txt')
 #mx.sgdmodel <- read.table('new_data/results_18feb_v02/sgdmodel_2comb_changHyper.txt')
