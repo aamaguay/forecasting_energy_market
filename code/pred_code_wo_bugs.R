@@ -2,7 +2,7 @@ setwd("/home/user/Desktop/files_desktop/forecasting_energy_market")
 source('code/functions_d2c.R')
 #region
 # %%
-pw<- "#q6a21I&OA5k"
+pw <- "#q6a21I&OA5k"
 library(conflicted)
 library(tidyr)
 library(RMariaDB)
@@ -51,14 +51,6 @@ library(lme4)
 library(parallel)
 library(sgd)
 
-#####
-#require(remotes)
-#install_version("caret",version= "6.0.80")
-#remove.packages("caret")  
-#install.packages('caret')
-#packageVersion("readr")
-##
-
 conflict_prefer("filter", "dplyr")
 
 log_midpipe <- function(x, ...) {
@@ -72,7 +64,7 @@ log_midpipe <- function(x, ...) {
 #region
 # %% Get DWD Data
 # "BE", "NL", "LU"
-country <- "LU"
+country <- "NL"
 ZONE <- c(country) 
 i.z <- 1 # later in loop
 zone <- ZONE[i.z]
@@ -103,7 +95,7 @@ ds_edat$DateTime <- as.POSIXct(ds_edat$DateTime, format = "%Y-%m-%dT%H:%M:%S", t
 yt_name <- paste(country, "_Load_Actual",sep = '')
 cat('na in met dataset*******************************************************\n')
 colSums(is.na(ds_edat))
-cat('apply imputation of na in met dataset*********************************************\n')
+cat('apply imputation of edat in met dataset*********************************************\n')
 # I can use here 2 options:
 # zoo::na.locf(ds_edat[,yt_name])
 # na_interpolation(ds_edat[,yt_name], option='spline', method='natural')
@@ -201,7 +193,6 @@ DATA$weekend =  ifelse((DATA$DoW %in% c(6,7)), 1, 0)
 DATA$is_day_start <- ifelse((DATA$HoD %in% seq(1,6) ), 1, 0)
 DATA$is_day_end <- ifelse((DATA$HoD%in% seq(18,23) ), 1, 0)
 
-#ts.plot(DATA$weekend)
 #plot of seasonal patterns
 ds_unique <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
 plot(head(ds_unique$DateTime,16+(24*1)),head(ds_unique[,yt_name],16+(24*1)),type='l')
@@ -211,9 +202,19 @@ min_date_vec <- c(lubridate::year(min(DATA$DateTime)),lubridate::month(min(DATA$
                   lubridate::day(min(DATA$DateTime)), lubridate::hour(min(DATA$DateTime)),
                   lubridate::minute(min(DATA$DateTime)), lubridate::second(min(DATA$DateTime))
                   )
-yts <- ts(ds_unique[,yt_name][1:(24*30*3)], frequency = 24 ,start = 0)
+yts <- ts(ds_unique[,yt_name][1:(24*30*12)], frequency = 24*7 ,start = 0)
 plot( decompose(yts) )
 
+par(mfrow = c(1,2))
+acf(ds_unique[,yt_name], main='ACF of energy demand' )
+pacf(ds_unique[,yt_name], main='PACF of energy demand')
+
+par(mfrow=c(4,2), mar=c(4,5,3,1))
+plot( decompose(yts))
+plot(ts(DATA$NL_Load_Actual), 
+     plot.type="single", col = c("blue"), type= "o" , lwd=.5,main="1", ylab="Miles",
+     cex.lab=5, xlab = '', xaxt='n')
+grid()
 
 cat('control by changes on trends or means****************************************\n')
 future <- DATA[,yt_name]
@@ -239,11 +240,6 @@ vec_changes <- "trendcpt"
 res <- mclapply(1:length(list_sequence), FUN = function(i) est.trend.mean.changes(i,list_sequence, vec_changes ))
 for (i in 1:length(list_sequence)) res[[i]] <- unlist((res[[i]]$type_change$trendcpt@cpts)+(n_per_chunk*(i-1)) )
 DATA$chgTrend <- ifelse(as.integer(rownames(DATA)) %in% unlist(res), 1, 0)
-
-#ts.plot(DATA[,yt_name][1:300])
-#abline(v=unlist(ls_trend_chpoints), col='green')
-#length(unlist(ls_trend_chpoints))
-#ts.plot(DATA$chgTrend[1:300])
 
 
 cat('create trend variable in FULL dataset*************************************\n')
@@ -326,27 +322,6 @@ simple_corr_matrix_plot(DATA %>%
                         colnames(DATA %>% 
                                    select_if(is.numeric)),"spearman" )
 
-#ts.plot(FDATA$holidays_dummy)
-#lines(FDATA$DoY92.holidays, col='red')
-#sum(FDATA$DoY92.holidays)
-#summary(lm( formula = formula_str, data = FDATA %>% select_if(is.numeric) ))
-#par(mfrow=c(3,1), mar=c(4,5,3,1))
-#plot(ts(FDATA$NL_Load_Actual), 
-#     plot.type="single", col = c("blue"), type= "o" , lwd=.5,main="1", ylab="Miles",
-#     cex.lab=5, xlab = '', xaxt='n')
-#grid()
-#plot(ts(FDATA$holidays_dummy), 
-#     plot.type="single", col = c("red"), type= "o" , lwd=.5,main="2", ylab="Miles",
-#     cex.lab=5, xlab = '', xaxt='n')
-#plot(ts(FDATA$DoY92.holidays), 
-#     plot.type="single", col = c("orange"), type= "o" , lwd=.5,main="2", ylab="Miles",
-#     cex.lab=5, xlab = '', xaxt='n')
-
-#ts.plot(FDATA$DoY)
-#abline(c(100))
-#View(FDATA %>% filter(DoY==92) %>% 
-#       dplyr::select(DateTime,DoY,holidays_dummy))
-#lubridate::week("2021-04-02")
 
 
 # Define train and test horizon
@@ -364,12 +339,6 @@ for (i.hm in 1:N) {
   # View(DATA[which(DATA$DateTime >= FSTUDYDAYS[239+1] + 1 * 3600 & DATA$DateTime <= FSTUDYDAYS[239+1] + H * 3600),])
 }
 
-# verify length of each subset
-#mm <- list()
-#for (i.hm in 1:N) mm[[i.hm]] <- length(IDTEST[[i.hm]])
-#for (v in IDTEST){
-#  cat(length(v),'\n')
-#}
 
 cat("holidays preparation********************************\n")
 holidays <- read_csv("data_22dec_2022/holidays_2000_2030.csv")
@@ -431,12 +400,6 @@ DATA <- cbind(DATA, tmp)
 cat('impute met.features******************************************************\n')
 #"TTT", 'FF', TTT doesn't have NA
 DATA$FF <- na_interpolation(DATA$FF, option='spline')
-
-#length(unique(data.frame(holidays[holidays$Date>="2021-01-01",'Name'])$Name))
-#length((holidays[holidays$Date>="2021-01-01",'Name']))
-#View(tmp)
-#dim(tmp)
-#dim(DATA)
 
 cat("data preparation for gb, rf, sgd*****************************************\n")
 S <- 24
@@ -550,7 +513,7 @@ rf_results <- list()
 gb_results <- list()
 sgd_results <- list()
 ar_results <- list()
-
+length(features_x)
 # run model estimation
 
 for (i.m in seq_along(model.names)) {
@@ -672,7 +635,6 @@ for (i.m in seq_along(model.names)) {
   # model specific data preparation for the forecasting study [model dependent]: 
   if(mname %in% c("GAM", "gb","rf", "elasticNet", "sgdmodel")){
     FDATA <- dplyr::full_join(DATA, TMPDATA, by = c("DateTime")) %>% arrange(DateTime, horizon)
-    #FDATA <- FDATA[,c(ytarget, "DateTime", "horizon", features_x)]
     
     # define formula for gb and rf
     formula_str <- paste(
@@ -722,11 +684,8 @@ for (i.m in seq_along(model.names)) {
       hmin <- head(HORIZON[[i.hl]], 1)
       hmax <- tail(HORIZON[[i.hl]], 1)
       idt <- FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon)
-      #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
-      #View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1],])
-      # View(FDATA[FDATA$DateTime <= FSTUDYSEQ[[i.N]][1] & FDATA$horizon >= hmin & FDATA$horizon <= hmax & !is.na(FDATA$horizon),])
+      
       DATAtrain <- FDATA[idt, ]
-      #View(DATAtrain)
       
       idtestl <- list()
       for (i.hm in seqid) {
@@ -778,7 +737,6 @@ for (i.m in seq_along(model.names)) {
         filter_test <- DATAtest[, c(features_x)] %>% 
           replace(is.na(.), 0)
         
-        #5+"jj"
         set.seed(11)
         samp <- sample(1:nrow(lgb.grid ), 5)
         lgb.gridFilter <- lgb.grid [samp,]
@@ -790,7 +748,6 @@ for (i.m in seq_along(model.names)) {
         lgb.valid <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% tail(20) ),
                                  label = head(filter_train[,ytarget], tail(20) ) )
         
-        #6+"jjj"
         estimate.lgb <- function(hyper_combi, lgb.train, lgb.valid, lgb.gridFilter){
           ls_params <- as.list(data.frame(lgb.gridFilter[hyper_combi,]) )
           obj <- as.character(ls_params$obj)
@@ -818,24 +775,11 @@ for (i.m in seq_along(model.names)) {
                                                                                              lgb.valid,
                                                                                              lgb.gridFilter))
         cat('finish lgb.....\n')
-        #last_time <- Sys.time()
-        #diff_mode_iter <- difftime(recent_time,last_time)
-        #View(cbind(lgb.gridFilter,rmse_vec))
-        #ts.plot(head(filter_train[,ytarget], 50 ))
-        #lines(predict(best_tune_model, as.matrix(head(filter_train[,features_x], 50) )),col='red') 
-        #ts.plot(DATAtest[,ytarget])
-        #lines(predict(best_tune_model,as.matrix(filter_test)),col='red')
-        #min(rmse_vec) #2965.907 ,1744.536 , 1668.944, #2959.842 , 2953, 2904.337, 2871.571 , 2858.706, 2899.405, 2885.954, 2871.17, 2855.269
         
         rmse_vec = c()
         for (i in 1:nrow(lgb.gridFilter)) rmse_vec[i] <- est.lgb[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
         best_tune_model  <- est.lgb[[id_min_rmse]]$mod
-        #best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
-        # save results
-        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        #gb_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
-        #                                     best_ds_feat_import = best_ds_feat_import)
         
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
@@ -844,18 +788,6 @@ for (i.m in seq_along(model.names)) {
         pred <- t(matrix(predict(best_tune_model, data = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
         best_tune_model$params
-
-        
-        #pred_yt = predict(gbm_op, filter_train %>% select(-ytarget))
-        #ts.plot(cbind(DATAtest[, c(ytarget)], pred_y), col= c('red','blue'))
-        #ts.plot(cbind(DATAtrain[, c(ytarget)], pred_yt), col= c('red','blue'))
-        #ts.plot(sin(2*pi*DATA$DoY / 365.25))
-        #ts.plot(cos(2*pi*DATA$DoY / 365.25))
-        #ts.plot(DATA[,ytarget])
-        #ts.plot(head(DATAtest[,"cos365"],300))
-        #as.matrix(sparse.model.matrix(~.-1, data = dff))
-        #class(sparse.model.matrix(~.-1, data = dff))
-        #class(as.matrix(DATAtrain[, features_x]))
         
       }
       if (mname == "rf") {
@@ -876,7 +808,6 @@ for (i.m in seq_along(model.names)) {
         rf.valid <- lgb.Dataset(data = as.matrix(filter_train %>% dplyr::select(-ytarget) %>% tail(20) ),
                                  label = head(filter_train[,ytarget], tail(20) ) )
         
-        #6+"jjj"
         estimate.rf <- function(hyper_combi, rf.train, rf.valid, rf.gridFilter){
           ls_params <- as.list(data.frame(rf.gridFilter[hyper_combi,]) )
           obj <- as.character(ls_params$obj)
@@ -900,19 +831,11 @@ for (i.m in seq_along(model.names)) {
                                                                                            rf.valid,
                                                                                            rf.gridFilter))
         cat('finish rf.....\n')
-        #last_time <- Sys.time()
-        #difftime(recent_time,last_time)
-        #View(cbind(lgb.gridFilter,rmse_vec))
-        #as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
+        
         rmse_vec = c()
         for (i in 1:nrow(rf.gridFilter)) rmse_vec[i] <- est.rf[[i]]$score
         id_min_rmse <- which.min(rmse_vec)
         best_tune_model <- est.rf[[id_min_rmse]]$mod
-        #best_ds_feat_import <- as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
-        # save results
-        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        #rf_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec),
-        #                                     best_ds_feat_import = best_ds_feat_import)
         
         test_sparse  = Matrix(as.matrix(filter_test), sparse=TRUE)
         cat('test has: ',dim(filter_test),'\n')
@@ -925,8 +848,6 @@ for (i.m in seq_along(model.names)) {
           replace(is.na(.), 0)
         filter_test <- DATAtest[, c(ytarget, features_x)] %>% 
           replace(is.na(.), 0)
-        #filter_valid <- filter_train %>% tail(20)
-        #filter_train <- filter_train %>% head(nrow(filter_train)-20)
         
         lambdas <- c(seq(0.1, 0.91, 0.1), seq(1,45, 2) )
         alphas <- c(seq(0.8, 1, 0.1), 1)
@@ -950,18 +871,10 @@ for (i.m in seq_along(model.names)) {
           tuneGrid = elastic.net.gridFilter,
           metric = 'RMSE',
           maximize = FALSE   )
-        #View(elastic_net_reg$results)
-        #end_time1 <- Sys.time()
-        #print(difftime(init_time1,end_time1))
-        #10*33*6/60
         
         pred <- t(matrix(predict(elastic_net_reg, as.matrix(filter_test %>% select(-ytarget))), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
-        #ts.plot(pred)
-        # since 18:00pm to 7:00am
-        #plot(y = mm[, c(ytarget)][48+9:(24*5)],
-        #     x =mm[, c("DateTime")][48+9:(24*5)], type = 'l')
-        #View(mm)
+
       }
       if (mname == "sgdmodel"){
         filter_train <- DATAtrain[, c(ytarget, features_x)] %>% 
@@ -981,13 +894,6 @@ for (i.m in seq_along(model.names)) {
         samp <- sample(1:nrow(sgdmodel.grid), 2)
         sgdmodelFilter.grid <- sgdmodel.grid[samp,]
         
-        #full_lambdas <- c(seq(0.1, 1, 0.1),seq(1,50, 1) )#c(10,20,30,40)
-        #samp <- sample(1:length(full_lambdas), 30)
-        #lambdas <- full_lambdas[samp]#c(10,20,30,40)
-        #full_alphas <- c(seq(0.1, 1, 0.1), seq(1,25,1))
-        #samp_ <- sample(1:length(full_alphas), 30)
-        #alphas <- full_alphas[samp_]#1
-        #5+"kk"
         estimate.sgd <- function(id_val, filter_train, filter_valid, sgdmodelFilter.grid, ytarget){
           lambda_val <- sgdmodelFilter.grid[id_val,'lambdas']
           alphas <- sgdmodelFilter.grid[id_val,'alphas']
@@ -1005,10 +911,6 @@ for (i.m in seq_along(model.names)) {
         est.sgd <- mclapply(1:nrow(sgdmodelFilter.grid), FUN = function(i) estimate.sgd(i, filter_train, 
                                                                                 filter_valid, sgdmodelFilter.grid,
                                                                                 ytarget)) 
-        #hist(est.sgd[[4]]$mod$coefficients)
-        #end_time1 <- Sys.time()
-        #print(difftime(init_time1,end_time1))
-        #View(cbind(sgdmodelFilter.grid,rmse_vec))
         rmse_vec = c()
         #min(rmse_vec)
         for (i in 1:nrow(sgdmodelFilter.grid)) rmse_vec[i] <- est.sgd[[i]]$rmse
@@ -1016,22 +918,14 @@ for (i.m in seq_along(model.names)) {
         best_lambda <- est.sgd[[id_min_rmse]]$lambda
         best_alpha <- est.sgd[[id_min_rmse]]$alphas
         best_tune_model <- est.sgd[[id_min_rmse]]$mod
-        # save results
-        #id_save_result <- paste(mname, as.character(i.N), as.character(i.hl), sep = '_')
-        #sgd_results[[id_save_result]] <- list(best_tune_model = best_tune_model, best_score_valid = min(rmse_vec))
-        #predict(best_tune_model, newdata = test_sparse)
         
         test_sparse  = Matrix(as.matrix(filter_test %>% dplyr::select(-ytarget)), sparse=TRUE)
         pred <- t(matrix(predict(best_tune_model, newdata = test_sparse), 
                          nrow = length(HORIZON[[i.hl]]), ncol= length(seqid), byrow = TRUE))
-        #View(pred)
-        #ts.plot(as.vector(t(pred)))
-        #lines(as.vector(t(filter_test %>% select(ytarget)) ) , col='red')
 
       }
       if (mname == "prophet"){
-        #5+'jj'
-        dim(DATAtrainwow)
+
         DATAtrainwow <- DATAtrain[DATAtrain$horizon <= S, ]
         DATAtestwow <- (DATAtest[DATAtest$horizon <= S, ] %>% arrange(DateTime))
         y <- unlist(DATAtrainwow[, ytarget])
@@ -1169,9 +1063,8 @@ for (i.m in seq_along(model.names)) {
 cat("check training time..................................\n")
 ls_train_time
 
-as.data.frame(lgb.importance(best_tune_model, percentage = TRUE))
-#View(FORECASTS[,,'gb'])
-#dim(FORECASTS[,,'gb'])
+
+
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
@@ -1188,6 +1081,7 @@ cat("save each the matrix result from each algorithm using the next line......\n
 #write.table(FORECASTS[,,'rf'], 'new_data/LU_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter2.txt')
 #write.table(FORECASTS[,,'AR'], 'new_data/LU_results/results_22feb_v02/AR_iter1.txt')
 
+# load the result tables
 #BE
 mx.sgdmodel <- read.table('new_data/BE_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
 mx.gb <- read.table('new_data/BE_results/results_22feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
@@ -1257,8 +1151,6 @@ FFT <- FORECASTS
 
 dim(FORECASTS)
 
-#View(FORECASTS[,,'AR'])
-
 for(i.m in 1:M) FFT[,,i.m]<- FORECASTS[, , "true"]
 RES <- FORECASTS - FFT
 
@@ -1272,12 +1164,10 @@ MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE)
 MAE
 as.data.frame(MAE) %>% arrange(MAE)
 
-#lgb.importance(best_tune_model)
 
 
 cat("finish..........................................................\n")
 
-# plot de errors of MAE c('AR', 'RF','sgdmodel')
 ts.plot(MAEh[1:200, model.names ], col = 1:8, ylab = "MAE")
 legend("topleft", model.names, col = 1:8, lwd = 1)
 abline(v = 0:10 * S, col = "orange")
@@ -1295,28 +1185,3 @@ ts.plot(as.vector(FORECASTS[,,'sgdmodel'])[1:(24*1000)],col='red')
 lines(as.vector(FORECASTS[,,'true'])[1:(24*1000)],col='blue')
 #lines(as.vector(FORECASTS[,,'AR'])[1:(24*10)],col='green')
 lines(as.vector(FORECASTS[,,'gb'])[1:(24*1000)],col='yellow')
-
-View(holidays)
-View(FORECASTS[,,'true'])
-str_date <- '2021-05-12'
-ts.plot(FORECASTS[,,'true'][str_date,],col='black')
-
-ts.plot(FORECASTS[,,'sgdmodel'][str_date,],col='red')
-lines(FORECASTS[,,'ensemble.sgd.rf.AR'][str_date,],col='brown')
-lines(FORECASTS[,,'true'][str_date,],col='black')
-lines(FORECASTS[,,'AR'][str_date,],col='purple')
-lines(FORECASTS[,,'rf'][str_date,],col='blue')
-lines(FORECASTS[,,'gb'][str_date,],col='green')
-legend("topleft", c('true','sgdmodel','gb','rf'),
-       col = c('black','red','green','blue'), lwd = 1)
-
-ts.plot(as.vector(FORECASTS[300,,'sgdmodel']),col='red')
-lines(as.vector(FORECASTS[300,,'true']),col='black')
-lines(as.vector(FORECASTS[300,,'gb']),col='green')
-lines(as.vector(FORECASTS[300,,'rf']),col='blue')
-lines(as.vector(FORECASTS[300,,'AR']),col='orange')
-
-View(FORECASTS[,,'sgdmodel'])
-View(FORECASTS[1:(20*4),,'xgb'])
-View(FORECASTS[1:(20*4),,'true'])
-
