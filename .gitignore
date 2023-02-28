@@ -8,3 +8,4 @@
 .RData
 .Ruserdata
 /code/download_dataset.R
+/code/functions_d2c.R
