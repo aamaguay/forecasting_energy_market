@@ -64,7 +64,7 @@ log_midpipe <- function(x, ...) {
 #region
 # %% Get DWD Data
 # "BE", "NL", "LU"
-country <- "NL"
+country <- "LU"
 ZONE <- c(country) 
 i.z <- 1 # later in loop
 zone <- ZONE[i.z]
@@ -101,7 +101,6 @@ cat('apply imputation of edat in met dataset************************************
 # na_interpolation(ds_edat[,yt_name], option='spline', method='natural')
 ds_edat[,yt_name] <- na_interpolation(ds_edat[,yt_name], option='spline', method='natural')
 EDAT[[country]] <- ds_edat
-
 
 ds_edat %>% 
   arrange(desc(DateTime)) %>% 
@@ -152,6 +151,9 @@ dnames <- names(DATA)
 ## DateTime is in UTC, so I need to convert to CET format
 DATA <- DATA %>% 
   mutate( DateTimeCET = as.POSIXlt(DateTime, tz="CET") )
+## replace zeros of target
+DATA[(DATA[yt_name] == 0), yt_name] <- NA
+DATA[yt_name] <- zoo::na.locf(DATA[,yt_name])
 
 cat('agg additional features******************************************************\n')
 SummerTime = lubridate::dst(DATA$DateTimeCET)
@@ -211,7 +213,7 @@ pacf(ds_unique[,yt_name], main='PACF of energy demand')
 
 par(mfrow=c(4,2), mar=c(4,5,3,1))
 plot( decompose(yts))
-plot(ts(DATA$NL_Load_Actual), 
+plot(ts(DATA[,yt_name], frequency  = 24*7 ), 
      plot.type="single", col = c("blue"), type= "o" , lwd=.5,main="1", ylab="Miles",
      cex.lab=5, xlab = '', xaxt='n')
 grid()
@@ -315,14 +317,20 @@ colSums(is.na(DATA))
 # drop because they have a lot of missing values: R602 TN TX TX
 # include: "TTT", "Rad1h", "Neff", RR1c", "FF", "FX1"
 cat('correlation plot of DATA ********************************************************\n')
-source('code/functions_d2c.R')
+
 simple_corr_matrix_plot(DATA %>% 
                           select_if(is.numeric), 
                         0.8 ,0.9 , 'corr using spearman',
                         colnames(DATA %>% 
                                    select_if(is.numeric)),"spearman" )
 
-
+#ds_unique <- DATA %>% distinct(DateTime, .keep_all= TRUE) %>% arrange(DateTime,horizon)
+#simple_corr_matrix_plot(ds_unique %>% 
+#  dplyr::select(yt_name,c('weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF",
+#                          "Trend", "holidays_dummy"),c(paste_seasonality) ),0.8 ,0.9, 'corr using spearman',
+#  c(yt_name,c('weekend', "SummerTime", "is_day_start", "is_day_end", "TTT", "FF",
+#              "Trend", "holidays_dummy"),paste_seasonality)
+#  ,"spearman" )
 
 # Define train and test horizon
 H <- 240
@@ -497,7 +505,7 @@ TMPDATA <- cbind(TMPDATA, mx.result.tibble.holidays.WoY[subs,])
 # define models to estimate
 # "true", "bench", "GAM", "AR", "hw", "elasticNet", 'sgdmodel', 'gb', 'rf', 'prophet'
 cat('use only one algorith for each iteration in order to avoid ram problems....\n')
-model.names <- c("rf") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
+model.names <- c("true") #"rf", "gb",'sgdmodel', "AR","true", "bench")  ---> run jointly --> "AR","true", "bench"
 M <- length(model.names)
 
 # for (i.m in model.names)
@@ -1063,8 +1071,6 @@ for (i.m in seq_along(model.names)) {
 cat("check training time..................................\n")
 ls_train_time
 
-
-
 #v2 using a modified version of the old hyper of gb
 #_original version using 1sr hyper of gb
 cat("save each the matrix result from each algorithm using the next line......\n")
@@ -1080,6 +1086,7 @@ cat("save each the matrix result from each algorithm using the next line......\n
 #write.table(FORECASTS[,,'sgdmodel'], 'new_data/LU_results/results_22feb_v02/sgdmodel_2comb_includNewFeatures_WoY_iter1.txt')
 #write.table(FORECASTS[,,'rf'], 'new_data/LU_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter2.txt')
 #write.table(FORECASTS[,,'AR'], 'new_data/LU_results/results_22feb_v02/AR_iter1.txt')
+#write.table(FORECASTS[,,'true'], 'new_data/LU_results/results_22feb_v02/true_iter1_v2fixed.txt')
 
 # load the result tables
 #BE
@@ -1095,7 +1102,7 @@ mx.sgdmodel <- read.table('new_data/LU_results/results_22feb_v02/sgdmodel_2comb_
 mx.gb <- read.table('new_data/LU_results/results_22feb_v02/gb_5comb_includNewFeatures_WoY_iter1.txt')
 mx.rf <- read.table('new_data/LU_results/results_22feb_v02/rf_5comb_includNewFeatures_WoY_iter1.txt')
 mx.AR <- read.table('new_data/LU_results/results_22feb_v02/AR_iter1.txt')
-mx.true <- read.table('new_data/LU_results/results_22feb_v02/true_iter1.txt')
+mx.true <- read.table('new_data/LU_results/results_22feb_v02/true_iter1_v2fixed.txt')
 mx.bench <- read.table('new_data/LU_results/results_22feb_v02/bench_iter1.txt')
 
   
@@ -1127,7 +1134,8 @@ model.names <- c('sgdmodel', "gb", "rf", "AR", "true", "bench",
 M <- length(model.names)
 r_name <- rownames(mx.true)
 c_name <- colnames(mx.true)
-nw.forecasts <- array(NA, dim = c(N, H, M))
+#nw.forecasts <- array(NA, dim = c(N, H, M))
+nw.forecasts <- array(NA, dim = c(length(r_name), length(c_name), M))
 dimnames(nw.forecasts) <- list(r_name, c_name, model.names)
 
 nw.forecasts[,, model.names[1]] <- as.matrix(mx.sgdmodel)
@@ -1164,7 +1172,9 @@ MAE <- apply(abs(RES), c(3), mean, na.rm = TRUE)
 MAE
 as.data.frame(MAE) %>% arrange(MAE)
 
-
+View(mx.bench)
+View(max(RES[,,'bench']))
+sort(c(RES[,,'bench'])[!is.na(c(RES[,,'bench']))], decreasing = TRUE)
 
 cat("finish..........................................................\n")
 

@@ -267,29 +267,51 @@ get_rates_modif <- function(x){
 #region define shiftDST
 # %%
 # shift function that acts on local time if summer is provided otherwise simple shift
-shiftDST<- function(x, clag=1, summer=NULL, hfreq=1){ 
-  # clag == vector of lags
-  # summer is index set of length/dim[1] of x indicating the summer time, e.g. comp by by "$isdst" argument of POSIXlt
-  # hfreq=1 for hourly data, =4 for quarterly hourly etc. - indicated summer time shift, only relevant if summer is provided
-  if(is.null(summer)){
-    Xlst <- as.matrix(data.table(x)[, shift(.SD, clag, give.names=TRUE)])
-  } else {
-    SLAGS<- matrix(clag, ncol=length(clag),nrow=3, byrow=TRUE) + -1:1*hfreq
-    Sxl <- as.matrix(data.table(x)[, data.table::shift(.SD, SLAGS, give.names=TRUE)])
-    xd<- dim(Sxl)[2]/3
-    Xlst <- as.matrix(Sxl[, 0:(xd-1)*3+2])
-    dsummer<- c(0, diff(summer)) # TODO strictly minor error if first observation is at clock-change.
-    marchid <- which(dsummer == 1) # 23 hours
-    octid <- which( dsummer == -1)
-    II<- diag(length(clag)) == 1
-    for(i.l in seq_along(clag))for (i.r in seq_along(marchid)) {
-      rid<- unique(pmax(pmin(marchid[i.r] + 0:(clag[i.l] - 1), dim(Xlst)[1]),1))
-      Xlst[rid,i.l] <- Sxl[rid, (0:(xd-1)*3+1)[i.l]]
-    }
-    for(i.l in seq_along(clag))for (i.r in seq_along(octid)) {
-      rid<- unique(pmax(pmin(octid[i.r] + 0:(clag[i.l] - 1), dim(Xlst)[1]),1))
-      Xlst[rid,i.l] <- Sxl[rid, (0:(xd-1)*3+3)[i.l]]
+get.HLD <- function(DATA, holidays, zone="DE", S=24, deg=3, bridgep = 0.5, k=0.25){
+  xtime <- DATA$DateTime
+  # zone only supports full countries at the moment 
+  # deg is, cubic spline degree
+  # fraction of bridging effects, if 0.5 then half a day before and after the holiday potential effects can occur, values between 0 and 2 are reasonable
+  # k determines the number of grid points for the splines, if k=1/S then each data point we have a new basis (if in addition deg=1, these are indicators), the smaller k the more basis functions.
+  yrange <- range(lubridate::year(xtime)) + c(-1,1) # safety margins [allows for predictions up to 1 year ahead]
+  holidays <- holidays %>% filter(CountryCode == zone) %>%
+    filter(lubridate::year(Date)>=yrange[1] & lubridate::year(Date)<=yrange[2] ) 
+  # remove holidays which were not lauched yet.
+  holidays$LaunchYear[is.na(holidays$LaunchYear)] <- 0
+  holidays %>% filter(lubridate::year(Date)>= LaunchYear ) 
+  #holidays %>% select(Date, Name) %>% mutate(
+  #            DoW = lubridate::wday(Date, week_start = 1)
+  #            )## TODO think about more information es. Global and counties
+  #mutate_at(vars(x, y), factor)
+  holidays$Name <- as.factor(holidays$Name)
+  holnames <- levels(holidays$Name)
+  #holnames <- gsub(" ", "",holnames)
+  hldN <- length(holnames)
+  
+  #12----(-12)----24-----(+24+12)----36
+  #-12 -11 -10  -9  -8  -7  -6  -5  -4  -3  -2  -1   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18
+  # 19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35  36
+  xbas <- -(S*bridgep):((1+bridgep)*S)
+  xbask <- seq(min(xbas), max(xbas), length = k*(length(xbas)-1) +1)
+  
+  hldbas <- splineDesign(xbask, xbas, outer.ok=TRUE, ord=deg+1)
+  hldbasc <- t(apply(hldbas,1,cumsum))
+  hldbasx<- hldbas #cbind(hldbas,hldbasc)
+  K <- dim(hldbasx)[2]
+  
+  DHL <- array(0, dim=c(length(xtime),K*hldN) ) ## add cumulative
+  i.hld <-1
+  for(i.hld in 1:hldN){
+    idhld <- which<-which(xtime %in% as.POSIXct( holidays$Date[ holidays$Name == holnames[i.hld] ], tz="UTC") )
+    # idhld<- which(as.numeric(format(dtime, "%m")) == DATEhld[[i.hld]][1]	& as.numeric(format(dtime, "%d")) == DATEhld[[i.hld]][2] & as.numeric(format(dtime, "%H")) == 0)
+    for(i.b in seq_along(idhld)){ ## add basis segments
+      idb <- (idhld[i.b]+min(xbas)):(idhld[i.b]+max(xbas)) ## TODO does not work properly if hld is first or last day...
+      idbact <- which(idb > 0 & idb <= dim(DHL)[1])
+      DHL[idb[idbact],(1:K)+K*(i.hld-1)] <- hldbasx[idbact,]
     }
   }
-  Xlst
+  
+  ## holidays prepared but not used.
+  dimnames(DHL)<- list(NULL,paste0(rep(holnames, rep(K,length(holnames))),"_",1:K))
+  DHL 
 }
